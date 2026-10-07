@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+#
+# cow-worktree — create a git worktree seeded by APFS copy-on-write clones.
+#
+# A plain `git worktree add` writes every tracked file. On a large repo that is
+# hundreds of megabytes and tens of seconds per worktree. On APFS, clonefile(2)
+# shares blocks instead: creation is near-free and copies diverge only as files
+# are edited. The saving comes from picking a donor worktree already close to the
+# base ref, hence the automatic donor search. Off APFS (or across volumes) it
+# falls back to a plain `git worktree add`.
+#
+# Usage:
+#   cow-worktree <branch> [options]
+#
+#   --base <ref>     branch point (default: origin's default branch)
+#   --path <dir>     worktree location (default: <primary>.<branch with / as ->)
+#   --donor <dir>    force a donor instead of searching for the nearest one
+#   --detach         check out --base detached; <branch> names the directory only
+#   --clean          drop gitignored files instead of cloning them
+#   --no-cow         skip cloning, fall back to a plain `git worktree add`
+#   --print-path     print only the resulting path on stdout
+#
+# Gitignored files ride along by default (node_modules, build caches, vendored
+# gems), so no install step has to run. Pass --clean for a pristine tree.
+#
+# The result is an ordinary git worktree; `git worktree` and Worktrunk see it
+# with no special handling.
+#
+set -euo pipefail
+
+die() { printf 'cow-worktree: %s\n' "$*" >&2; exit 1; }
+log() { [ -n "${QUIET:-}" ] || printf 'cow-worktree: %s\n' "$*" >&2; }
+
+BRANCH=""; BASE=""; NEW=""; DONOR=""; DETACH=""; CLEAN=""; NOCOW=""; PRINT_PATH=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base)       BASE="${2:?--base needs a ref}"; shift 2 ;;
+    --path)       NEW="${2:?--path needs a dir}"; shift 2 ;;
+    --donor)      DONOR="${2:?--donor needs a dir}"; shift 2 ;;
+    --detach)     DETACH=1; shift ;;
+    --clean)      CLEAN=1; shift ;;
+    --no-cow)     NOCOW=1; shift ;;
+    --print-path) PRINT_PATH=1; QUIET=1; shift ;;
+    -h|--help)    awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
+    -*)           die "unknown option $1" ;;
+    *)            [ -z "$BRANCH" ] && BRANCH="$1" || die "unexpected argument $1"; shift ;;
+  esac
+done
+[ -n "$BRANCH" ] || die "usage: cow-worktree <branch> [--base ref] [--clean]"
+
+git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
+
+PRIMARY=$(git worktree list --porcelain | awk '/^worktree / && !done {print substr($0, 10); done=1}')
+
+if [ -z "$BASE" ]; then
+  BASE=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null) || true
+  [ -n "$BASE" ] || BASE=$(git rev-parse --verify --quiet main >/dev/null 2>&1 && echo main || echo master)
+fi
+BASE_SHA=$(git rev-parse --verify --quiet "$BASE^{commit}") || die "base ref not found: $BASE"
+
+if [ -z "$NEW" ]; then
+  NEW="${PRIMARY}.$(printf '%s' "$BRANCH" | tr '/' '-')"
+fi
+[ -e "$NEW" ] && die "path already exists: $NEW"
+
+cow_supported() {
+  local dir probe
+  dir=$(dirname "$NEW"); [ -d "$dir" ] || return 1
+  probe="$dir/.cow-probe.$$"
+  : > "$probe.src" 2>/dev/null || return 1
+  if cp -c "$probe.src" "$probe.dst" 2>/dev/null; then
+    rm -f "$probe.src" "$probe.dst"; return 0
+  fi
+  rm -f "$probe.src" "$probe.dst"; return 1
+}
+
+plain_add() {
+  if [ -n "$DETACH" ]; then
+    git worktree add --detach "$NEW" "$BASE" >&2
+  else
+    git worktree add -b "$BRANCH" "$NEW" "$BASE" >&2
+  fi
+}
+
+if [ -n "$NOCOW" ] || ! cow_supported; then
+  [ -n "$NOCOW" ] || log "clonefile unavailable here; falling back to a plain worktree add"
+  plain_add
+  [ -n "$PRINT_PATH" ] && printf '%s\n' "$NEW"
+  exit 0
+fi
+
+pick_donor() {
+  local best="" best_d=-1 p h d
+  while read -r p; do
+    [ -d "$p" ] || continue
+    h=$(git -C "$p" rev-parse --verify --quiet HEAD 2>/dev/null) || continue
+    d=$(git rev-list --count "$h...$BASE_SHA" 2>/dev/null) || continue
+    if [ "$d" -eq 0 ]; then printf '%s\t0\n' "$p"; return 0; fi
+    if [ "$best_d" -lt 0 ] || [ "$d" -lt "$best_d" ]; then best="$p"; best_d="$d"; fi
+  done < <(git worktree list --porcelain | awk '/^worktree /{print $2}')
+  [ -n "$best" ] || return 1
+  printf '%s\t%s\n' "$best" "$best_d"
+}
+
+if [ -z "$DONOR" ]; then
+  if picked=$(pick_donor); then
+    DONOR=${picked%%$'\t'*}; DONOR_DIST=${picked##*$'\t'}
+  else
+    DONOR="$PRIMARY"; DONOR_DIST="?"
+  fi
+else
+  [ -d "$DONOR" ] || die "donor worktree not found: $DONOR"
+  DONOR_DIST=$(git rev-list --count "$(git -C "$DONOR" rev-parse HEAD)...$BASE_SHA" 2>/dev/null || echo "?")
+fi
+log "donor $(basename "$DONOR") ($DONOR_DIST commits from $BASE)"
+
+DONOR_SHA=$(git -C "$DONOR" rev-parse HEAD)
+
+git worktree add --no-checkout --detach "$NEW" "$DONOR_SHA" >/dev/null 2>&1
+
+shopt -s dotglob nullglob
+for entry in "$DONOR"/*; do
+  base=$(basename "$entry")
+  [ "$base" = ".git" ] && continue
+  cp -c -R "$entry" "$NEW/$base" 2>/dev/null || cp -R "$entry" "$NEW/$base"
+done
+shopt -u dotglob nullglob
+
+while IFS= read -r junk; do
+  [ -n "$junk" ] && rm -rf "${NEW:?}/$junk"
+done < <(git -C "$DONOR" ls-files --others --exclude-standard --directory)
+
+if [ -n "$CLEAN" ]; then
+  while IFS= read -r ignored; do
+    [ -n "$ignored" ] && rm -rf "${NEW:?}/$ignored"
+  done < <(git -C "$DONOR" ls-files --others --ignored --exclude-standard --directory)
+fi
+
+while IFS= read -r -d '' link; do
+  target=$(readlink "$link")
+  case "$target" in
+    "$DONOR"/*) ln -sfn "${NEW}${target#$DONOR}" "$link" ;;
+  esac
+done < <(find "$NEW" -type l -lname '/*' -print0 2>/dev/null)
+
+git -C "$NEW" reset --mixed --quiet "$DONOR_SHA" >/dev/null 2>&1
+
+DIRTY=$(git -C "$NEW" diff --name-only)
+if [ -n "$DIRTY" ]; then
+  log "donor had uncommitted changes; restoring $(printf '%s\n' "$DIRTY" | wc -l | tr -d ' ') file(s)"
+  printf '%s\n' "$DIRTY" | tr '\n' '\0' | xargs -0 git -C "$NEW" checkout -- >/dev/null 2>&1
+fi
+
+if [ -n "$DETACH" ]; then
+  git -C "$NEW" checkout --detach "$BASE" >/dev/null 2>&1
+else
+  git -C "$NEW" checkout -b "$BRANCH" "$BASE" >/dev/null 2>&1
+fi
+git -C "$NEW" status --porcelain >/dev/null
+
+if [ -n "$PRINT_PATH" ]; then printf '%s\n' "$NEW"; else log "created $NEW"; fi

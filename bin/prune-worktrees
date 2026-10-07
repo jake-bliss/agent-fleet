@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""prune-worktrees: remove worktrees whose branch has a MERGED or CLOSED PR.
+
+Not `git branch --merged`: squash-merged branches still report as unmerged, so
+PR state from GitHub (via gh) is the only reliable signal.
+
+Safety:
+  - never uses --force, so a worktree with uncommitted or untracked work refuses and survives
+  - never touches the main checkout, detached worktrees, or branches with an OPEN PR
+  - never touches a branch with NO PR at all (that is unpushed work)
+  - dry-run by default; pass --apply to remove
+
+Usage: prune-worktrees <repo-path> [--apply]
+"""
+import json
+import os
+import subprocess
+import sys
+
+
+def sh(args, **kw):
+    return subprocess.run(args, capture_output=True, text=True, **kw)
+
+
+def pr_branches(repo, state, only=None):
+    """Head branch names for PRs in `state`."""
+    out = sh(["gh", "pr", "list", "--state", state, "--limit", "1000",
+              "--json", "headRefName,state"], cwd=repo)
+    if out.returncode != 0:
+        sys.exit(f"prune-worktrees: gh failed for state={state}: {out.stderr.strip()}")
+    rows = json.loads(out.stdout or "[]")
+    return {r["headRefName"] for r in rows if only is None or r["state"] == only}
+
+
+def worktrees(repo):
+    out = sh(["git", "worktree", "list", "--porcelain"], cwd=repo)
+    entries, cur = [], {}
+    for line in out.stdout.splitlines():
+        if line.startswith("worktree "):
+            if cur:
+                entries.append(cur)
+            cur = {"path": line[9:], "branch": None}
+        elif line.startswith("branch "):
+            cur["branch"] = line[7:].replace("refs/heads/", "")
+    if cur:
+        entries.append(cur)
+    return entries
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print(__doc__)
+        return
+    repo = os.path.expanduser(sys.argv[1])
+    apply = "--apply" in sys.argv[2:]
+    if not os.path.isdir(repo):
+        sys.exit(f"prune-worktrees: repo path missing: {repo}")
+
+    common = sh(["git", "rev-parse", "--path-format=absolute",
+                 "--git-common-dir"], cwd=repo).stdout.strip()
+    main_checkout = os.path.dirname(common)
+
+    print(f"prune-worktrees: repo={repo}")
+    print("prune-worktrees: fetching PR state (open/merged/closed)...")
+    open_b = pr_branches(repo, "open")
+    merged_b = pr_branches(repo, "merged")
+    closed_b = pr_branches(repo, "closed", only="CLOSED")
+
+    capped = len(merged_b) >= 1000
+    resolved_cache = {}
+
+    def has_finished_pr(branch):
+        if branch in merged_b or branch in closed_b:
+            return True
+        if branch in open_b:
+            return False
+        if not capped:
+            return False
+        if branch not in resolved_cache:
+            out = sh(["gh", "pr", "list", "--head", branch, "--state", "all",
+                      "--limit", "5", "--json", "state"], cwd=repo)
+            states = {r["state"] for r in json.loads(out.stdout or "[]")}
+            resolved_cache[branch] = bool(states & {"MERGED", "CLOSED"}) and "OPEN" not in states
+        return resolved_cache[branch]
+
+    removed = dirty = kept = no_pr = 0
+    for wt in worktrees(repo):
+        path, branch = wt["path"], wt["branch"]
+        if path == main_checkout or not branch:
+            kept += 1
+            continue
+        if branch in open_b:
+            kept += 1
+            continue
+        if not has_finished_pr(branch):
+            no_pr += 1
+            continue
+        if not apply:
+            print(f"  would remove: {path}  ({branch})")
+            removed += 1
+            continue
+        if sh(["git", "worktree", "remove", path], cwd=repo).returncode == 0:
+            removed += 1
+        else:
+            dirty += 1
+            print(f"  DIRTY, kept: {path}")
+
+    if apply:
+        sh(["git", "worktree", "prune"], cwd=repo)
+
+    print(f"\nprune-worktrees: removed={removed} dirty-kept={dirty} "
+          f"open-or-main={kept} no-PR-kept={no_pr}")
+    if not apply:
+        print("prune-worktrees: DRY RUN — re-run with --apply to execute")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,610 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADW Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Source+Sans+3:wght@400;600;700&family=Geist+Mono:wght@400;600&display=swap" rel="stylesheet">
+<meta name="color-scheme" content="dark">
+<style>
+:root {
+  --bg: #171d1b; --card: #222b26; --raised: #2b352e; --ink: #eee9db; --muted: #b4b9aa; --faint: #909d87;
+  --line: #566451; --input: #7c8a76; --gold: #cfb87b; --chip: #2b352e;
+  --red: oklch(0.68 0.19 25); --amber: #cfb87b; --green: oklch(0.75 0.13 150); --blue: #cfb87b;
+  --display: "Fraunces", Georgia, serif;
+  --sans: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
+  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { background: var(--bg); }
+body { margin: 0; color: var(--ink); font: 15px/1.5 var(--sans); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--line); }
+::-webkit-scrollbar-thumb:hover { background: var(--input); }
+header { display: flex; align-items: baseline; gap: 16px; padding: 22px 24px 10px; flex-wrap: wrap; border-bottom: 3px double var(--line); margin: 0 24px; padding-left: 0; padding-right: 0; }
+h1 { font-family: var(--display); font-weight: 400; font-size: 34px; letter-spacing: -.01em; margin: 0; line-height: 1.1; }
+.meta { color: var(--muted); font-size: 13px; }
+main { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 18px; padding: 18px 24px 40px; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: 0; padding: 16px 18px; min-width: 0; }
+section.wide { grid-column: 1 / -1; }
+h2 { font-family: var(--sans); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .18em; margin: 0 0 12px; color: var(--gold); }
+h2 .n { color: var(--ink); }
+.item { padding: 10px 0; border-top: 1px solid var(--line); }
+.item:first-of-type { border-top: 0; }
+.row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.epic { font-family: var(--display); font-weight: 400; font-size: 16px; }
+.tag { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border: 1px solid var(--line); background: var(--raised); white-space: nowrap; }
+.tag.red { border-color: var(--red); } .tag.amber { border-color: var(--gold); } .tag.green { border-color: var(--green); }
+.red { color: var(--red); } .amber { color: var(--amber); } .green { color: var(--green); }
+.dim { color: var(--muted); }
+.mono, code { font-family: var(--mono); font-size: 12.5px; }
+a { color: var(--gold); text-decoration: underline; text-underline-offset: 4px; } a:hover { color: var(--ink); }
+ul { margin: 6px 0 0; padding-left: 20px; } li { margin: 3px 0; }
+details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 4px; }
+details summary:hover { color: var(--ink); }
+table { width: 100%; border-collapse: collapse; }
+td, th { text-align: left; padding: 8px 10px 8px 0; border-top: 1px solid rgba(86,100,81,.5); vertical-align: top; }
+th { color: var(--gold); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .14em; border-top: 0; border-bottom: 1px solid var(--line); }
+tbody tr:hover, table tr:hover td { background: rgba(43,53,46,.35); }
+.bar { height: 6px; background: var(--raised); border: 1px solid var(--line); overflow: hidden; width: 90px; margin-top: 5px; }
+.bar > span { display: block; height: 100%; background: var(--gold); }
+.over > span { background: var(--red); }
+#err { color: var(--red); padding: 8px 24px 0; }
+.decision { background: var(--bg); border: 1px solid var(--line); border-left: 3px double var(--gold); padding: 14px 16px; margin: 12px 0; }
+.decision.answered { border-left-color: var(--green); opacity: .8; }
+.body { margin-top: 10px; max-height: 420px; overflow: auto; color: #cbd0bd; }
+.body h1, .body h2, .body h3 { font-family: var(--display); font-weight: 400; font-size: 17px; margin: 12px 0 4px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+.body p { margin: 6px 0; }
+.body b, .body strong { color: var(--ink); font-weight: 600; }
+.body code { background: var(--raised); color: var(--gold); padding: 1px 5px; }
+.body pre { background: var(--raised); padding: 10px 12px; overflow-x: auto; border: 1px solid var(--line); }
+.body pre code { background: transparent; color: var(--ink); padding: 0; }
+.screen { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: #121715; border: 1px solid var(--line); padding: 8px 10px; max-height: 260px; overflow: auto; margin-top: 6px; }
+.opts { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.opt { text-align: left; padding: 9px 12px; border: 1px solid var(--input); background: transparent; color: var(--ink); cursor: pointer; font: inherit; border-radius: 0; }
+.opt:hover { background: var(--raised); }
+.opt.sel { border: 3px double var(--gold); padding: 7px 10px; color: var(--gold); }
+.opt .k { font-family: var(--display); font-weight: 600; margin-right: 8px; color: var(--gold); }
+textarea, .inp, .linksel, input { border-radius: 0; border: 1px solid var(--input); background: var(--bg); color: var(--ink); font: inherit; accent-color: var(--gold); }
+textarea::placeholder, input::placeholder { color: var(--faint); }
+textarea { width: 100%; min-height: 54px; margin-top: 10px; padding: 9px; resize: vertical; }
+.actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+button.go { display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; border-radius: 0; border: 3px double var(--gold); background: transparent; color: var(--gold); cursor: pointer; font: 600 14px var(--sans); transition: background .15s, color .15s; }
+button.go:hover:not(:disabled) { background: rgba(207,184,123,.1); color: var(--ink); }
+button.go:disabled { opacity: .5; cursor: not-allowed; }
+button.go.danger { border-color: var(--red); color: var(--red); }
+button.go.danger:hover:not(:disabled) { background: rgba(220,90,80,.12); color: var(--ink); }
+button.ghost { padding: 5px 11px; border-radius: 0; border: 1px solid var(--input); background: transparent; color: var(--ink); cursor: pointer; font: 500 13px var(--sans); transition: background .15s; }
+button.ghost:hover { background: var(--raised); }
+button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible, .opt:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+.status { font-size: 13px; }
+.linksel { margin-top: 4px; max-width: 220px; padding: 3px 4px; font-size: 12.5px; }
+[data-view] { cursor: pointer; text-decoration: underline dotted var(--gold); text-underline-offset: 3px; }
+#viewer { position: fixed; inset: 0; background: var(--bg); z-index: 10; display: none; flex-direction: column; }
+#viewer.open { display: flex; }
+#v-head { display: flex; gap: 10px; align-items: center; padding: 10px 16px; border-bottom: 3px double var(--line); flex-wrap: wrap; background: var(--card); }
+#v-term { flex: 1; overflow: auto; margin: 0; padding: 10px 16px; font-family: var(--mono);
+  font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; background: #121715; color: #e4dfd0; }
+#v-foot { border-top: 3px double var(--line); padding: 10px 16px 14px; background: var(--card); }
+.keys { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.keys button { min-width: 44px; min-height: 38px; font-family: var(--mono); }
+.v-row { display: flex; gap: 8px; align-items: flex-end; }
+.v-row textarea { margin: 0; min-height: 44px; }
+.inp { display: block; width: 100%; margin-top: 4px; padding: 9px; }
+.body table, .wrap { display: block; overflow-x: auto; }
+.lanes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.lane { background: var(--bg); border: 1px solid var(--line); min-width: 0; }
+.lane > h3 { margin: 0; padding: 8px 10px; font: 600 11px var(--sans); letter-spacing: .16em; text-transform: uppercase; color: var(--gold); border-bottom: 3px double var(--line); display: flex; justify-content: space-between; }
+.lane .cards { padding: 8px; display: flex; flex-direction: column; gap: 8px; max-height: 460px; overflow: auto; }
+.kcard { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--line); padding: 7px 9px; font-size: 13.5px; }
+.kcard .sid { font-family: var(--mono); font-size: 12.5px; color: var(--ink); word-break: break-word; }
+.kcard .meta2 { display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline; margin-top: 4px; font-size: 12px; color: var(--muted); }
+.kcard .note { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
+.lane.l-building .kcard { border-left-color: var(--gold); }
+.lane.l-review .kcard { border-left-color: var(--green); }
+.lane.l-blocked .kcard { border-left-color: var(--red); }
+@media (max-width: 520px) {
+  header { margin: 0 16px; padding-top: 14px; gap: 8px; }
+  h1 { font-size: 28px; }
+  main { padding: 14px 16px 32px; grid-template-columns: 1fr; gap: 14px; }
+  section { padding: 14px; }
+  .decision { padding: 12px; }
+  .body { max-height: none; }
+  .opt, button.go, button.ghost { min-height: 44px; }
+  textarea, .inp { font-size: 16px; }
+  .screen { font-size: 11px; }
+  .lanes { grid-template-columns: 1fr; }
+  .lane .cards { max-height: none; }
+  #epics table, #epics tbody { display: block; }
+  #epics tr:first-child:has(th) { display: none; }
+  #epics tr.erow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 10px; padding: 12px 0; border-top: 1px solid var(--line); }
+  #epics tr.erow td { display: block; padding: 0; border: 0; }
+  #epics tr.erow td[data-l]::before { content: attr(data-l); display: block; color: var(--gold); font-size: 10px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+  #epics tr.erow .c-name, #epics tr.erow .c-wide { grid-column: 1 / -1; }
+  #epics tr.erow .linksel { max-width: 100%; width: 100%; }
+  #epics tr:not(.erow) { display: block; }
+  #epics tr:not(.erow) > td { display: block; padding: 0; border: 0; }
+  #v-term { font-size: 10.5px; padding: 8px; }
+  #v-head, #v-foot { padding-left: 10px; padding-right: 10px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>ADW Board</h1>
+  <span class="meta" id="meta">loading…</span>
+  <label class="meta"><input type="checkbox" id="full"> all pending items</label>
+</header>
+<div id="err"></div>
+<div id="viewer" role="dialog" aria-modal="true">
+  <div id="v-head"><button class="ghost" id="v-close">✕ Close</button><span class="mono" id="v-pane"></span>
+    <span id="v-title" class="epic"></span><span class="tag" id="v-status"></span><span class="status" id="v-st"></span>
+    <button class="ghost" id="v-focus" style="margin-left:auto">Focus on Mac</button></div>
+  <pre id="v-term"></pre>
+  <div id="v-foot">
+    <div class="keys"><button class="ghost" data-key="esc">Esc</button><button class="ghost" data-key="enter">Enter</button><button class="ghost" data-key="up">↑</button><button class="ghost" data-key="down">↓</button><button class="ghost" data-key="tab">Tab</button><button class="ghost" data-key="shift+tab">⇧Tab</button><button class="ghost" data-key="1">1</button><button class="ghost" data-key="2">2</button><button class="ghost" data-key="3">3</button><button class="ghost" data-key="4">4</button><button class="ghost" data-key="y">y</button><button class="ghost" data-key="n">n</button><button class="ghost" data-key="ctrl+c">Ctrl+C</button></div>
+    <div class="v-row"><textarea id="v-text" placeholder="Message to the agent (Send = type it + Enter)"></textarea><button class="go" id="v-send">Send</button></div>
+  </div>
+</div>
+<main>
+  <section class="wide" id="launch"><details id="launch-d"><summary><h2 style="display:inline">Launch agent</h2>
+    <span class="dim"> · new herdr tab running claude (launch args set by ADW_LAUNCH_ARGS)</span></summary>
+    <div style="display:grid;gap:8px;margin-top:10px">
+      <label class="dim">Workspace <select id="l-ws" class="inp"></select></label>
+      <label class="dim">Folder inside it (optional) <input id="l-sub" class="inp" list="l-subs" placeholder="e.g. web-app" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+      <datalist id="l-subs"></datalist>
+      <div class="dim mono" id="l-path"></div>
+      <label class="dim">Tab label (optional) <input id="l-label" class="inp" placeholder="what it is for" autocomplete="off"></label>
+      <label class="dim">First prompt (optional) <textarea id="l-prompt" placeholder="Sent once the agent is ready"></textarea></label>
+      <div class="actions"><button class="go" id="l-go">Launch</button><span class="status" id="l-st"></span></div>
+    </div></details></section>
+  <section class="wide" id="needs"></section>
+  <section class="wide" id="mate" hidden></section>
+  <section class="wide" id="watch" hidden></section>
+  <section class="wide" id="kanban" hidden></section>
+  <section class="wide" id="parked" hidden></section>
+  <section class="wide" id="epics"></section>
+  <section class="wide" id="tabs"></section>
+</main>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const ago = ts => { const s = Date.now()/1000 - ts;
+  return s < 3600 ? `${Math.floor(s/60)}m` : s < 86400 ? `${Math.floor(s/3600)}h` : `${Math.floor(s/86400)}d`; };
+const pr = (repo, n) => n ? (/^[\w.-]+\/[\w.-]+$/.test(repo || "") ? ` <a href="https://github.com/${repo}/pull/${n}" target="_blank">#${n}</a>` : ` #${n}`) : "";
+const segs = (e, list) => list.map(s => `<span class="mono">${esc(s.id)}</span>${pr(e.repo, s.pr)}`).join(", ");
+const md = s => esc(s).replace(/`([^`]+)`/g, '<code class="mono">$1</code>');
+const TOKEN = "__ADW_TOKEN__";
+const drafts = {}, picks = {}, confirming = {};
+
+function mdBlock(src) {
+  const out = []; let list = null, code = null, table = null;
+  const inline = t => esc(t).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+    .replace(/(^|[\s(])(https?:\/\/[^\s)<]+)/g, '$1<a href="$2" target="_blank">$2</a>');
+  const flush = () => {
+    if (list) { out.push(`<ul>${list.join("")}</ul>`); list = null; }
+    if (table) {
+      const rows = table.filter(r => !/^\|?\s*:?-{2,}/.test(r)).map(r => r.replace(/^\||\|$/g, "").split("|").map(c => inline(c.trim())));
+      out.push(`<table>${rows.map((r, i) => `<tr>${r.map(c => i ? `<td>${c}</td>` : `<th>${c}</th>`).join("")}</tr>`).join("")}</table>`);
+      table = null;
+    }
+  };
+  for (const line of String(src || "").split("\n")) {
+    if (code !== null) { if (line.startsWith("```")) { out.push(`<pre><code>${esc(code.join("\n"))}</code></pre>`); code = null; } else code.push(line); continue; }
+    if (line.startsWith("```")) { flush(); code = []; continue; }
+    if (/^\s*\|.*\|\s*$/.test(line)) { if (list) { out.push(`<ul>${list.join("")}</ul>`); list = null; } (table = table || []).push(line.trim()); continue; }
+    const h = line.match(/^(#{1,3})\s+(.*)/); if (h) { flush(); out.push(`<h3>${inline(h[2])}</h3>`); continue; }
+    const li = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)/); if (li) { (list = list || []).push(`<li>${inline(li[1])}</li>`); continue; }
+    flush(); if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+  }
+  if (code !== null) out.push(`<pre><code>${esc(code.join("\n"))}</code></pre>`);
+  flush(); return out.join("");
+}
+
+async function post(route, body) {
+  const r = await fetch(route, { method: "POST", headers: { "Content-Type": "application/json", "X-ADW-Token": TOKEN }, body: JSON.stringify(body) });
+  if (r.status === 403) { location.reload(); throw new Error("page was stale; reloaded, try again"); }
+  const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+function linkSelect(pane, current, epics) {
+  return `<select class="linksel" data-link="${esc(pane)}"><option value="">${current ? "unlink" : "link to epic…"}</option>
+    ${epics.map(n => `<option value="${esc(n)}" ${n === current ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
+}
+function tabPicker(epic, agents) {
+  const free = agents.filter(a => a.epic !== epic);
+  return `<select class="linksel" data-linkepic="${esc(epic)}"><option value="">link a tab…</option>
+    ${free.map(a => `<option value="${esc(a.pane)}">${esc(a.pane)} · ${esc(a.kind)} · ${esc(a.title.slice(0, 40))}</option>`).join("")}</select>`;
+}
+
+function confirmRow(e, inFlight, tabs) {
+  const c = e.counts, warn = [];
+  if (inFlight) warn.push(`${inFlight} segment(s) still building or in an open PR`);
+  if (c.ready) warn.push(`${c.ready} ready to dispatch`);
+  if (c.pending) warn.push(`${c.pending} pending`);
+  if (c.blocked) warn.push(`${c.blocked} blocked`);
+  if (e.pending && e.pending.items.length) warn.push(`PENDING.md has ${e.pending.items.length} items`);
+  if (tabs) warn.push("a conductor tab is still running");
+  const k = "c:" + e.epic, typed = drafts[k] || "";
+  return `<tr><td colspan="9"><div class="decision" style="margin:4px 0">
+    <div>Mark <b>${esc(e.epic)}</b> complete? It disappears from the board; you can reopen it from "completed epics". Nothing in the repo or graph.json changes.</div>
+    ${warn.length ? `<div class="amber" style="margin-top:6px">Heads up: ${warn.map(esc).join(" · ")}</div>` : `<div class="green" style="margin-top:6px">Nothing open in its files.</div>`}
+    <input data-draft="${esc(k)}" value="${esc(typed)}" placeholder="type ${esc(e.epic)} to confirm" autocomplete="off" autocapitalize="off" spellcheck="false" class="inp" style="margin-top:10px">
+    <div class="actions"><button data-complete="${esc(e.epic)}" ${typed === e.epic ? "" : "disabled"} class="go danger">Complete epic</button>
+    <span class="status" id="st-c-${esc(e.epic)}"></span></div></div></td></tr>`;
+}
+
+function decisionCard(d) {
+  const ans = d.answer;
+  const opts = (d.options || []).map(o => `<button class="opt ${picks[d.id] === o.key ? "sel" : ""}" data-pick="${esc(d.id)}" data-key="${esc(o.key)}" ${ans ? "disabled" : ""}>
+    <span class="k">${esc(o.key)}</span>${esc(o.label)}${d.recommend === o.key ? ' <span class="tag green">recommended</span>' : ""}</button>`).join("");
+  let foot;
+  if (ans) {
+    const deliv = d.delivered ? `<span class="green">delivered to ${esc(d.pane)}</span>`
+      : d.undeliverable ? `<span class="red">${esc(d.delivery_error)}</span>`
+      : `<span class="amber">${esc(d.delivery_error || "delivery pending")}</span>`;
+    foot = `<div class="actions"><span class="tag green">answered: ${esc(ans.choice)}</span>${ans.note ? `<span class="dim">${esc(ans.note)}</span>` : ""}<span class="status">${deliv}</span></div>`;
+  } else {
+    foot = `<textarea data-draft="d:${esc(d.id)}" placeholder="Note to the agent (optional with an option; enough on its own)">${esc(drafts["d:" + d.id] || "")}</textarea>
+      <div class="actions"><button class="go" data-answer="${esc(d.id)}">Answer</button>
+      ${d.pane ? `<button class="ghost" data-focus="${esc(d.pane)}">Open tab ${esc(d.pane)}</button>` : ""}<span class="status" id="st-${esc(d.id)}"></span></div>`;
+  }
+  return `<div class="decision ${ans ? "answered" : ""}"><div class="row"><span class="tag amber">decision</span><span class="mono dim">${esc(d.id)}</span>
+    <span class="epic">${esc(d.title)}</span>${d.epic ? `<span class="tag">${esc(d.epic)}</span>` : ""}<span class="dim">${ago(d.created)} ago</span></div>
+    <div class="body">${mdBlock(d.body)}</div>${opts ? `<div class="opts">${opts}</div>` : ""}${foot}</div>`;
+}
+
+function render(b) {
+  const full = document.getElementById("full").checked;
+  const agents = b.agents || [];
+  let needs = [], n = 0;
+  const decs = b.decisions || [];
+  for (const d of decs.filter(d => d.status === "open")) { n++; needs.push(decisionCard(d)); }
+  const TAG = { blocked: ["red", "dialog"], asks: ["dim", "may ask"], unsent: ["amber", "unsent draft"] };
+  const freshS = (b.ask_fresh_hours || 2) * 3600;
+  const fresh = a => a.last_active && Date.now()/1000 - a.last_active < freshS;
+  const urgent = a => a.attention === "blocked";
+  const parked = agents.filter(a => !urgent(a) && a.attention !== "working" && a.attention !== "background")
+    .sort((x, y) => (y.last_active || 0) - (x.last_active || 0));
+  const bg = agents.filter(a => a.attention === "background");
+  const tabCard = a => {
+    const k = "r:" + a.pane;
+    const reply = a.attention === "blocked"
+      ? `<div class="actions"><span class="dim">It's showing a dialog; answer it in the tab.</span><button class="ghost" data-view="${esc(a.pane)}">View</button></div>`
+      : `<textarea data-draft="${esc(k)}" placeholder="Reply to this agent">${esc(drafts[k] || "")}</textarea>
+         <div class="actions"><button class="go" data-reply="${esc(a.pane)}">Send</button><button class="ghost" data-view="${esc(a.pane)}">View</button><span class="status" id="st-${esc(a.pane)}"></span></div>`;
+    const [c, label] = TAG[a.attention] || ["dim", a.attention];
+    return `<div class="item"><div class="row">${TAG[a.attention] ? `<span class="tag ${c}">${label}</span>` : ""}
+      <span class="mono dim" data-view="${esc(a.pane)}">${esc(a.pane)}</span><span class="dim">${a.last_active ? `active ${ago(a.last_active)} ago` : "last activity unknown"}</span> <span>${esc(a.title)}</span>${a.epic ? ` <span class="tag">${esc(a.epic)}</span>` : ""}</div>
+      ${a.summary && a.attention !== "blocked" ? `<div style="margin-top:4px">${md(a.summary)}</div>` : ""}
+      ${a.screen ? `<details ${a.attention === "blocked" ? "open" : ""}><summary>last screen</summary><div class="screen">${esc(a.screen)}</div></details>` : ""}${reply}</div>`;
+  };
+  for (const a of agents.filter(urgent)) { n++; needs.push(tabCard(a)); }
+  const answered = decs.filter(d => d.status === "answered");
+  const html = `<h2>Needs you <span class="n">${n}</span> <span class="dim" style="text-transform:none;letter-spacing:0">· adw-ask decisions and open dialogs only</span></h2>` + (needs.join("") || `<div class="green">nothing</div>`)
+    + (bg.length ? `<div class="dim" style="font-size:12px;margin-top:8px">Waiting on their own background agents: ${bg.map(a => esc(a.pane)).join(", ")}.</div>` : "")
+    + (answered.length ? `<details><summary>${answered.length} answered in the last 24h</summary>${answered.map(decisionCard).join("")}</details>` : "");
+  const W = { overdue: ["amber", "overdue"], "stopped-silent": ["red", "stopped silent"], failed: ["red", "failed"], waiting: ["dim", "waiting"], done: ["green", "reported done"] };
+  const watched = agents.filter(a => a.watch && W[a.watch.state]);
+  const order2 = { failed: 0, "stopped-silent": 1, overdue: 2, waiting: 3, done: 4 };
+  watched.sort((x, y) => order2[x.watch.state] - order2[y.watch.state]);
+  const trouble = watched.filter(a => order2[a.watch.state] < 3).length;
+  const until = w => w.until ? ` · until ${new Date(w.until * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "";
+  const watchHtml = watched.length ? `<h2>Watch <span class="n">${trouble ? trouble + " trouble" : ""}</span>
+    <span class="dim" style="text-transform:none;letter-spacing:0"> · states tabs declared with adw-status, checked against what the tab actually did</span></h2>
+    ${watched.map(a => { const [c, l] = W[a.watch.state]; return `<div class="item"><div class="row"><span class="tag ${c}">${l}</span>
+      <span class="mono dim" data-view="${esc(a.pane)}">${esc(a.pane)}</span><span>${esc(a.title)}</span>${a.epic ? `<span class="tag">${esc(a.epic)}</span>` : ""}</div>
+      <div class="dim" style="margin-top:3px">${esc(a.watch.kind)}: ${md(a.watch.text)} <span style="opacity:.8">· ${ago(a.watch.at)} ago${until(a.watch)}</span></div>
+      ${a.watch.state === "stopped-silent" ? `<div class="dim" style="font-size:13px;margin-top:3px">It kept going after this report and then stopped without a new one.</div>` : ""}</div>`; }).join("")}` : "";
+  const me = document.getElementById("mate");
+  const mateHtml = b.mate ? `<h2>First mate <span class="dim" style="text-transform:none;letter-spacing:0">· digest ${ago(b.mate.at)} ago</span></h2>
+    <div class="body" style="max-height:none">${mdBlock(b.mate.text)}</div>` : "";
+  if (me.dataset.html !== mateHtml) { me.innerHTML = mateHtml; me.dataset.html = mateHtml; me.hidden = !b.mate; }
+  const LANES = [["ready", "Ready", ["ready"]], ["building", "Building", ["building"]],
+                 ["review", "In review", ["pr-open", "pr-ready"]], ["blocked", "Blocked", ["blocked"]]];
+  const lanesHtml = LANES.map(([k, label, sts]) => {
+    const cards = b.epics.flatMap(e => sts.flatMap(st => (e.segments[st] || []).map(sg => ({ ...sg, st, e }))));
+    return `<div class="lane l-${k}"><h3><span>${label}</span><span class="dim">${cards.length}</span></h3><div class="cards">
+      ${cards.map(c => { const tab = agents.find(a => a.pane === c.e.lead_pane) || agents.find(a => a.epic === c.e.epic);
+        return `<div class="kcard"><div class="sid">${esc(c.id)}</div>
+          <div class="meta2"><span class="tag">${esc(c.e.epic)}</span>${pr(c.e.repo, c.pr)}${c.st === "pr-ready" ? '<span class="amber">ready to merge</span>' : ""}
+          ${tab ? `<span class="mono" data-view="${esc(tab.pane)}">${esc(tab.pane)}</span>` : ""}</div>
+          ${c.note && k === "blocked" ? `<div class="note">${md(c.note.slice(0, 220))}</div>` : ""}</div>`; }).join("") || '<div class="dim" style="font-size:12.5px;padding:4px">—</div>'}
+      </div></div>`;
+  }).join("");
+  const anySeg = b.epics.some(e => ["ready", "building", "pr-open", "pr-ready", "blocked"].some(st => (e.segments[st] || []).length));
+  const kanbanHtml = anySeg ? `<h2>Segments <span class="dim" style="text-transform:none;letter-spacing:0">· across active epics, from graph.json</span></h2><div class="lanes">${lanesHtml}</div>` : "";
+  const ke = document.getElementById("kanban");
+  if (ke.dataset.html !== kanbanHtml) { ke.innerHTML = kanbanHtml; ke.dataset.html = kanbanHtml; ke.hidden = !anySeg; }
+  const we = document.getElementById("watch");
+  if (we.dataset.html !== watchHtml) { we.innerHTML = watchHtml; we.dataset.html = watchHtml; we.hidden = !watched.length; }
+  const parkedHtml = parked.length ? `<details><summary><h2 style="display:inline">Parked sessions <span class="n">${parked.length}</span></h2>
+    <span class="dim"> · idle, would take a reply; newest first. "may ask" = its last message reads like a question.</span></summary>
+    ${parked.map(tabCard).join("")}</details>` : "";
+  const pe = document.getElementById("parked");
+  if (pe.dataset.html !== parkedHtml) {
+    const act = document.activeElement, key = act && act.dataset && act.dataset.draft, pos = key && [act.selectionStart, act.selectionEnd];
+    const open = [...pe.querySelectorAll("details")].map(x => x.open);
+    pe.innerHTML = parkedHtml; pe.dataset.html = parkedHtml; pe.hidden = !parked.length;
+    pe.querySelectorAll("details").forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
+    if (key) { const t = pe.querySelector(`[data-draft="${CSS.escape(key)}"]`); if (t) { t.focus(); t.setSelectionRange(...pos); } }
+  }
+  const el = document.getElementById("needs");
+  if (el.dataset.html !== html) {
+    const act = document.activeElement, key = act && act.dataset && act.dataset.draft, pos = key && [act.selectionStart, act.selectionEnd];
+    const open = [...el.querySelectorAll("details")].map(x => x.open);
+    el.innerHTML = html; el.dataset.html = html;
+    el.querySelectorAll(".screen").forEach(x => { x.scrollTop = x.scrollHeight; });
+    el.querySelectorAll("details").forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
+    if (key) { const t = el.querySelector(`[data-draft="${CSS.escape(key)}"]`); if (t) { t.focus(); t.setSelectionRange(...pos); } }
+  }
+
+  const rows = b.epics.map(e => {
+    const c = e.counts, fl = (c.building || 0) + (c["pr-open"] || 0), mx = e.max_parallel || 0;
+    const tabs = agents.filter(a => a.epic === e.epic).sort((a, b) => (b.role === "lead") - (a.role === "lead")).map(a => `<span class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</span>${a.role === "lead" ? ' <span class="tag">lead</span>' : ""}`).join(" ")
+      + (e.lead && !e.lead_pane ? ` <span class="red">lead ${esc(e.lead.pane)} gone</span>` : "");
+    const inflight = ["building", "pr-open"].filter(s => (e.segments[s] || []).length)
+      .map(s => `<div><span class="dim">${s}:</span> ${segs(e, e.segments[s])}</div>`).join("");
+    return `<tr class="erow"><td class="c-name"><div class="epic">${esc(e.epic)}</div><div class="dim mono">${esc(e.repo)}</div></td>
+      <td data-l="In flight">${fl}/${mx || "?"}<div class="bar ${mx && fl > mx ? "over" : ""}"><span style="width:${mx ? Math.min(100, fl/mx*100) : 0}%"></span></div></td>
+      <td data-l="Merged">${c.merged || 0}</td><td data-l="Ready">${c.ready || 0}</td><td data-l="Pending">${c.pending || 0}</td>
+      <td class="c-wide" data-l="Segments">${inflight || '<span class="dim">—</span>'}</td>
+      <td class="c-wide" data-l="Tabs">${tabs || '<span class="dim">no tab</span>'}<div>${tabPicker(e.epic, agents)}</div></td><td class="dim" data-l="Touched">${ago(e.mtime)}</td>
+      <td class="c-wide"><button class="ghost" data-confirm="${esc(e.epic)}">${confirming[e.epic] ? "Cancel" : "Mark complete…"}</button></td></tr>
+      ${confirming[e.epic] ? confirmRow(e, fl, tabs) : ""}`;
+  }).join("");
+  const files = b.epics.map(e => {
+    const stuck = ["blocked", "pr-ready"].flatMap(st => (e.segments[st] || []).map(sg => ({ ...sg, st })));
+    const p = e.pending && e.pending.items.length ? e.pending : null;
+    const conductors = agents.filter(a => a.epic === e.epic).sort((a, b) => (b.role === "lead") - (a.role === "lead"));
+    if (!stuck.length && !p) return "";
+    const k = "e:" + e.epic, pane = conductors[0] && conductors[0].pane;
+    const shown = p ? (full ? p.items : p.items.slice(-5)) : [];
+    return `<div class="item"><div class="row"><span class="epic">${esc(e.epic)}</span>
+      <span class="dim">${stuck.length ? `${stuck.length} segment(s) marked blocked/pr-ready` : ""}${stuck.length && p ? " · " : ""}${p ? `PENDING.md ${p.items.length} items, updated ${ago(p.mtime)} ago` : ""}</span></div>
+      ${stuck.length ? `<ul>${stuck.map(sg => `<li><span class="tag ${sg.st === "blocked" ? "red" : "amber"}">${sg.st}</span> <span class="mono">${esc(sg.id)}</span>${pr(e.repo, sg.pr)}${sg.note ? ` <span class="dim">— ${md(sg.note)}</span>` : ""}</li>`).join("")}</ul>` : ""}
+      ${p ? `<details><summary>PENDING.md, newest ${shown.length}${shown.length < p.items.length ? ` of ${p.items.length}` : ""}</summary><ul>${shown.map(i => `<li>${md(i)}</li>`).join("")}</ul></details>` : ""}
+      ${pane ? `<textarea data-draft="${esc(k)}" placeholder="Message the ${esc(e.epic)} conductor (${esc(pane)})">${esc(drafts[k] || "")}</textarea>
+        <div class="actions"><button class="go" data-reply="${esc(pane)}" data-draftkey="${esc(k)}">Send</button>
+        <button class="ghost" data-reconcile="${esc(e.epic)}" data-pane="${esc(pane)}">Ask it to reconcile</button>
+        <button class="ghost" data-focus="${esc(pane)}">Open tab</button><span class="status" id="st-${esc(pane)}"></span></div>`
+        : `<div class="dim" style="font-size:12px;margin-top:6px">No conductor tab is running for this epic, so these entries may be out of date.</div>`}</div>`;
+  }).join("");
+  const epicsHtml = `<h2>Epics <span class="n">${b.epics.length}</span></h2>
+    <div style="overflow-x:auto"><table><tr><th>Epic</th><th>In flight</th><th>Merged</th><th>Ready</th><th>Pending</th><th>Segments in flight</th><th>Tab</th><th>Touched</th><th></th></tr>${rows}</table></div>
+    ${(b.completed || []).length ? `<details><summary>${b.completed.length} completed epics</summary><ul>${b.completed.map(c =>
+      `<li><span class="epic">${esc(c.epic)}</span> <span class="dim">${esc(c.repo)} · completed ${ago(c.completed_at)} ago</span>
+       <button class="ghost" data-reopen="${esc(c.epic)}">Reopen</button></li>`).join("")}</ul></details>` : ""}
+    ${files ? `<h2 style="margin-top:18px">From epic files <span class="dim" style="text-transform:none;letter-spacing:0">· graph.json and PENDING.md are only as current as the conductor keeps them</span></h2>${files}` : ""}`;
+  const ee = document.getElementById("epics");
+  if (ee.dataset.html !== epicsHtml) {
+    const act = document.activeElement, key = act && act.dataset && act.dataset.draft, pos = key && [act.selectionStart, act.selectionEnd];
+    const open = [...ee.querySelectorAll("details")].map(x => x.open);
+    ee.innerHTML = epicsHtml; ee.dataset.html = epicsHtml;
+    ee.querySelectorAll("details").forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
+    if (key) { const t = ee.querySelector(`[data-draft="${CSS.escape(key)}"]`); if (t) { t.focus(); t.setSelectionRange(...pos); } }
+  }
+
+  if (b.agents === null) { document.getElementById("tabs").innerHTML = `<h2>Tabs</h2><div class="dim">herdr not available</div>`; return; }
+  const epicNames = b.epics.map(e => e.epic);
+  const order = { blocked: 0, done: 1, working: 2, unknown: 3, idle: 4 };
+  const t = [...agents].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+  const cls = { blocked: "red", done: "amber", working: "green" };
+  document.getElementById("tabs").innerHTML = `<h2>Tabs <span class="n">${agents.length}</span>
+    <span class="dim">· ${agents.filter(a => a.status === "working").length} working · ${agents.filter(a => a.status === "idle").length} idle</span></h2>
+    <details ${t.some(a => a.status !== "idle") ? "open" : ""}><summary>show all</summary><table class="wrap"><tr><th>Pane</th><th>State</th><th>Attention</th><th>Active</th><th>Agent</th><th>Title</th><th>Epic</th><th>Dir</th></tr>
+    ${t.map(a => `<tr><td class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</td><td class="${cls[a.status] || "dim"}">${esc(a.status)}</td><td class="dim">${esc(a.attention)}</td><td class="dim">${a.last_active ? ago(a.last_active) : "?"}</td><td>${esc(a.kind)}</td>
+      <td>${esc(a.title)}</td><td>${a.role === "lead" ? `<span class="tag">lead</span> ${esc(a.epic)}` : linkSelect(a.pane, a.linked ? a.epic : "", epicNames)}${a.epic && !a.linked ? ` <span class="dim" style="font-size:11px">guess: ${esc(a.epic)}</span>` : ""}</td><td class="dim mono">${esc(a.cwd)}</td></tr>`).join("")}</table></details>`;
+}
+
+document.addEventListener("input", e => {
+  const k = e.target.dataset && e.target.dataset.draft; if (!k) return;
+  drafts[k] = e.target.value;
+  if (k.startsWith("c:")) { const btn = document.querySelector(`[data-complete="${CSS.escape(k.slice(2))}"]`); if (btn) btn.disabled = e.target.value !== k.slice(2); }
+});
+document.addEventListener("click", async e => {
+  const t = e.target.closest("button"); if (!t) return;
+  const ds = t.dataset;
+  if (ds.confirm) { confirming[ds.confirm] = !confirming[ds.confirm]; delete drafts["c:" + ds.confirm]; last && render(last); return; }
+  if (ds.complete || ds.reopen) {
+    const epic = ds.complete || ds.reopen; t.disabled = true;
+    try {
+      await post("/api/epic", ds.complete ? { epic, action: "complete", confirm: drafts["c:" + epic] || "" } : { epic, action: "reopen" });
+      delete confirming[epic]; delete drafts["c:" + epic]; tick();
+    } catch (err) { t.disabled = false; const st = document.getElementById("st-c-" + epic); if (st) st.textContent = err.message; else alert(err.message); }
+    return;
+  }
+  if (ds.pick) { picks[ds.pick] = picks[ds.pick] === ds.key ? undefined : ds.key; last && (document.getElementById("needs").dataset.html = "", render(last)); return; }
+  const st = id => document.getElementById("st-" + id);
+  try {
+    if (ds.answer) {
+      const id = ds.answer, note = drafts["d:" + id] || "";
+      if (!picks[id] && !note.trim()) { st(id).textContent = "pick an option or write a note"; return; }
+      t.disabled = true; st(id).textContent = "sending…";
+      const r = await post("/api/answer", { id, choice: picks[id] || "", note });
+      delete drafts["d:" + id]; delete picks[id];
+      st(id).textContent = r.delivered ? "delivered" : (r.delivery_error || "recorded");
+      tick();
+    } else if (ds.reconcile) {
+      const pane = ds.pane; t.disabled = true; st(pane).textContent = "sending…";
+      const r = await post("/api/reconcile", { pane, epic: ds.reconcile });
+      if (r.error) throw new Error(r.error);
+      st(pane).textContent = "sent; the conductor will reply in its tab"; tick();
+    } else if (ds.reply) {
+      const pane = ds.reply, dk = ds.draftkey || "r:" + pane, text = drafts[dk] || "";
+      if (!text.trim()) return;
+      t.disabled = true; st(pane).textContent = "sending…";
+      const r = await post("/api/reply", { pane, text });
+      if (r.error) throw new Error(r.error);
+      delete drafts[dk]; st(pane).textContent = "sent"; tick();
+    } else if (ds.focus) {
+      const r = await post("/api/focus", { pane: ds.focus }); if (r.error) throw new Error(r.error);
+    }
+  } catch (err) {
+    t.disabled = false; const id = ds.answer || ds.reply || ds.pane; if (id && st(id)) st(id).textContent = err.message; else alert(err.message);
+  }
+});
+
+let wss = [];
+const $ = id => document.getElementById(id);
+function lPath() {
+  const w = wss.find(w => w.id === $("l-ws").value); if (!w) return;
+  $("l-subs").innerHTML = w.children.map(c => `<option value="${esc(c)}">`).join("");
+  const sub = $("l-sub").value.trim().replace(/^\/+|\/+$/g, "");
+  $("l-path").textContent = "→ " + w.dir + (sub ? "/" + sub : "");
+}
+async function loadWs() {
+  try {
+    wss = await (await fetch("/api/workspaces", { cache: "no-store" })).json();
+    const cur = $("l-ws").value;
+    $("l-ws").innerHTML = wss.map(w => `<option value="${esc(w.id)}">${esc(w.label)} — ${esc(w.dir.replace(/^\/Users\/[^/]+/, "~"))}</option>`).join("");
+    if (cur) $("l-ws").value = cur;
+    lPath();
+  } catch (e) { $("l-st").textContent = "could not load workspaces: " + e.message; }
+}
+$("launch-d").addEventListener("toggle", () => { if ($("launch-d").open && !wss.length) loadWs(); });
+$("l-ws").addEventListener("change", () => { $("l-sub").value = ""; lPath(); });
+$("l-sub").addEventListener("input", lPath);
+$("l-go").addEventListener("click", async () => {
+  const btn = $("l-go"); btn.disabled = true; $("l-st").textContent = "starting claude… (up to a minute)";
+  try {
+    const r = await post("/api/launch", { workspace: $("l-ws").value, subdir: $("l-sub").value, label: $("l-label").value, prompt: $("l-prompt").value });
+    $("l-st").innerHTML = r.ok
+      ? `started <span class="mono">${esc(r.pane)}</span> in <span class="mono">${esc(r.dir)}</span>${r.error ? ` <span class="amber">${esc(r.error)}</span>` : ""} <button class="ghost" data-focus="${esc(r.pane)}">Open tab</button>`
+      : `<span class="red">${esc(r.error)}</span>`;
+    if (r.ok) { $("l-label").value = ""; $("l-prompt").value = ""; }
+    tick();
+  } catch (e) { $("l-st").innerHTML = `<span class="red">${esc(e.message)}</span>`; }
+  btn.disabled = false;
+});
+
+const ANSI16 = ["#1e1e1e","#e06c75","#98c379","#e5c07b","#61afef","#c678dd","#56b6c2","#dcdfe4",
+  "#5c6370","#ff7b86","#b5e890","#ffd68a","#82c4ff","#e09cff","#7fd6e0","#ffffff"];
+function c256(n) {
+  if (n < 16) return ANSI16[n];
+  if (n >= 232) { const v = 8 + (n - 232) * 10; return `rgb(${v},${v},${v})`; }
+  n -= 16; const f = x => x ? 55 + x * 40 : 0; return `rgb(${f(Math.floor(n / 36))},${f(Math.floor(n / 6) % 6)},${f(n % 6)})`;
+}
+function ansiHtml(src) {
+  let st = {}, out = "", open = false;
+  const flush = () => { if (open) { out += "</span>"; open = false; } };
+  const start = () => {
+    const css = [];
+    if (st.fg) css.push(`color:${st.fg}`); if (st.bg) css.push(`background:${st.bg}`);
+    if (st.b) css.push("font-weight:700"); if (st.dim) css.push("opacity:.6"); if (st.i) css.push("font-style:italic");
+    if (st.u) css.push("text-decoration:underline"); if (st.inv) css.push("filter:invert(1)");
+    if (css.length) { out += `<span style="${css.join(";")}">`; open = true; }
+  };
+  const re = /\x1b\[([0-9;:]*)m|\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Z0-9]|[\x00-\x08\x0b-\x1f]/g;
+  let i = 0, m;
+  while ((m = re.exec(src))) {
+    out += esc(src.slice(i, m.index)); i = re.lastIndex;
+    if (m[1] === undefined) continue;
+    const p = m[1] === "" ? [0] : m[1].split(/[;:]/).map(Number);
+    for (let k = 0; k < p.length; k++) {
+      const c = p[k];
+      if (c === 0) st = {}; else if (c === 1) st.b = 1; else if (c === 2) st.dim = 1; else if (c === 3) st.i = 1;
+      else if (c === 4) st.u = 1; else if (c === 7) st.inv = 1; else if (c === 22) { st.b = 0; st.dim = 0; }
+      else if (c === 23) st.i = 0; else if (c === 24) st.u = 0; else if (c === 27) st.inv = 0;
+      else if (c >= 30 && c <= 37) st.fg = ANSI16[c - 30]; else if (c >= 90 && c <= 97) st.fg = ANSI16[c - 82];
+      else if (c >= 40 && c <= 47) st.bg = ANSI16[c - 40]; else if (c >= 100 && c <= 107) st.bg = ANSI16[c - 92];
+      else if (c === 39) st.fg = null; else if (c === 49) st.bg = null;
+      else if (c === 38 || c === 48) {
+        let col = null;
+        if (p[k + 1] === 5) { col = c256(p[k + 2]); k += 2; }
+        else if (p[k + 1] === 2) { col = `rgb(${p[k + 2]},${p[k + 3]},${p[k + 4]})`; k += 4; }
+        if (c === 38) st.fg = col; else st.bg = col;
+      }
+    }
+    flush(); start();
+  }
+  out += esc(src.slice(i)); flush();
+  return out;
+}
+
+let vPane = null, vTimer = null, vBusy = false;
+async function vRefresh() {
+  if (!vPane || vBusy) return; vBusy = true;
+  try {
+    const r = await fetch(`/api/pane?pane=${encodeURIComponent(vPane)}&lines=160`, { cache: "no-store" });
+    const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status);
+    const term = $("v-term"), atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 40;
+    term.innerHTML = ansiHtml(j.text.replace(/\s+$/, ""));
+    if (atBottom) term.scrollTop = term.scrollHeight;
+    $("v-status").textContent = j.status || "no agent"; $("v-status").className = "tag " + ({ blocked: "red", working: "green", done: "amber" }[j.status] || "");
+    $("v-st").textContent = "";
+  } catch (e) { $("v-st").textContent = "refresh failed: " + e.message; }
+  vBusy = false;
+}
+function openViewer(pane, fromNav) {
+  if (!fromNav && location.hash !== "#view=" + pane) {
+    try { history.pushState({ view: pane }, "", "#view=" + pane); } catch (e) {}
+  }
+  vPane = pane; const a = (last && last.agents || []).find(a => a.pane === pane);
+  $("v-pane").textContent = pane; $("v-title").textContent = a ? a.title : "";
+  $("v-term").innerHTML = ""; $("viewer").classList.add("open"); document.body.style.overflow = "hidden";
+  vRefresh().then(() => { $("v-term").scrollTop = $("v-term").scrollHeight; });
+  clearInterval(vTimer); vTimer = setInterval(vRefresh, 1500);
+}
+function hideViewer() {
+  vPane = null; clearInterval(vTimer); $("viewer").classList.remove("open"); document.body.style.overflow = "";
+}
+function closeViewer() {
+  if (history.state && history.state.view) { history.back(); return; }
+  hideViewer();
+  try { history.replaceState(null, "", location.pathname); } catch (e) {}
+}
+$("v-close").addEventListener("click", closeViewer);
+document.addEventListener("keydown", e => { if (e.key === "Escape" && vPane && document.activeElement !== $("v-text")) closeViewer(); });
+$("v-focus").addEventListener("click", () => vPane && post("/api/focus", { pane: vPane }).catch(e => $("v-st").textContent = e.message));
+document.querySelectorAll("#viewer [data-key]").forEach(b => b.addEventListener("click", async e => {
+  e.stopPropagation();
+  try { await post("/api/keys", { pane: vPane, keys: [b.dataset.key] }); setTimeout(vRefresh, 300); }
+  catch (err) { $("v-st").textContent = err.message; }
+}));
+$("v-send").addEventListener("click", async () => {
+  const text = $("v-text").value.trim(); if (!text || !vPane) return;
+  $("v-send").disabled = true;
+  try { await post("/api/reply", { pane: vPane, text }); $("v-text").value = ""; setTimeout(vRefresh, 400); }
+  catch (e) { $("v-st").textContent = e.message; }
+  $("v-send").disabled = false;
+});
+document.addEventListener("click", e => {
+  const v = e.target.closest("[data-view]"); if (!v || v.closest("#viewer")) return;
+  e.preventDefault(); openViewer(v.dataset.view);
+}, true);
+const fromHash = () => {
+  if (location.hash.startsWith("#view=")) openViewer(decodeURIComponent(location.hash.slice(6)), true);
+  else if (vPane) hideViewer();
+};
+window.addEventListener("popstate", fromHash);
+setTimeout(fromHash, 300);
+
+document.addEventListener("change", async e => {
+  const t = e.target; if (!t.classList || !t.classList.contains("linksel")) return;
+  const pane = t.dataset.link || t.value, epic = t.dataset.link ? t.value : t.dataset.linkepic;
+  if (!pane) return;
+  t.disabled = true;
+  try { await post("/api/link", { pane, epic }); tick(); } catch (err) { alert(err.message); t.disabled = false; }
+});
+
+let last = null;
+async function tick() {
+  try {
+    const r = await fetch("/api/board", { cache: "no-store" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    last = await r.json(); render(last);
+    document.getElementById("err").textContent = "";
+    document.getElementById("meta").textContent = `updated ${new Date(last.generated * 1000).toLocaleTimeString()} · refreshes every 10s`;
+  } catch (e) { document.getElementById("err").textContent = `refresh failed: ${e.message}`; }
+}
+document.getElementById("full").addEventListener("change", () => last && render(last));
+tick(); setInterval(tick, 10000);
+</script>
+</body>
+</html>

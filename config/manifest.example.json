@@ -1,0 +1,27 @@
+{
+  "repos": {
+    "web-app": {
+      "path": "~/projects/web-app",
+      "base_branch": "main",
+      "human_approve": true,
+      "verify": {
+        "setup": "bundle install --quiet",
+        "migrate": "bin/rails db:migrate",
+        "test": "PARALLEL_WORKERS=1 bin/rails test",
+        "lint": "bundle exec rubocop"
+      }
+    },
+    "frontend": {
+      "path": "~/projects/frontend",
+      "base_branch": "main",
+      "human_approve": false,
+      "verify": {
+        "setup": "pnpm install --frozen-lockfile",
+        "test": "pnpm nx affected -t test",
+        "lint": "pnpm nx affected -t lint",
+        "typecheck": "pnpm nx affected -t typecheck",
+        "build": "pnpm nx affected -t build"
+      }
+    }
+  }
+}

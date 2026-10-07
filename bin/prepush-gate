@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+#
+# prepush-gate — installed as the repo's pre-push hook (see install-prepush-gate).
+#
+# Blocks a push until the commit being pushed has:
+#   - local CI green against THIS exact SHA          (ci-preflight)
+#   - a codex review of THIS SHA, or of the same diff before a pure rebase
+#                                                     (review-receipt codex pass)
+#   - a claude review of this SHA, of an ancestor of it, or of the same diff
+#     before a rebase                                 (review-receipt claude pass)
+#
+# The first-model review carries forward to fix commits so the fix loop does not
+# re-spend it; the second-model review and CI stay exact-SHA, so every pushed line
+# has had one review and CI ran against exactly what ships. A newer claude FAIL on
+# this lineage overrides an older pass.
+#
+# Verdicts live in adw-review-history.json in the git dir (review-receipt appends;
+# a new commit does not clear it). Deleting a ref, and pushing a commit already on
+# the remote, pass straight through. Escape hatch: `git push --no-verify`; see
+# docs/ci-gate.md for when that is acceptable.
+#
+set -uo pipefail
+case "${1:-}" in -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;; esac
+GITDIR="$(git rev-parse --absolute-git-dir)"
+RECEIPT="$GITDIR/adw-receipt.json"
+HIST="$GITDIR/adw-review-history.json"
+ZERO=0000000000000000000000000000000000000000
+red()  { printf '\033[31m%s\033[0m\n' "$*" >&2; }
+dim()  { printf '\033[2m%s\033[0m\n' "$*" >&2; }
+
+fail() {
+  red "pre-push blocked: $1"
+  shift; for l in "$@"; do dim "  $l"; done
+  dim ""
+  dim "  ci-preflight                      run the repo's CI locally"
+  dim "  review-receipt claude pass '...'  record the first-model review (carries to later fix commits)"
+  dim "  review-receipt codex  pass '...'  record the second-model review of this exact commit"
+  dim "  git push --no-verify              deliberate exception (docs/ci-gate.md)"
+  exit 1
+}
+
+BASE=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || { git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main; } || echo origin/master)
+patch_id() { local mb; mb=$(git merge-base "$BASE" "$1" 2>/dev/null) || return 0
+             git diff --raw --no-abbrev --no-renames "$mb" "$1" | git hash-object --stdin; }
+
+msg=""
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  [ "$local_sha" = "$ZERO" ] && continue
+  [ "$local_sha" = "$remote_sha" ] && continue
+
+  [ -f "$RECEIPT" ] || fail "no preflight receipt for ${local_sha:0:10}"
+  read -r r_sha ci < <(python3 - "$RECEIPT" <<'PY'
+import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: d = {}
+print(d.get("sha", "-"), d.get("ci", {}).get("status", "none"))
+PY
+)
+  [ "$r_sha" = "$local_sha" ] || fail "local CI receipt is for a different commit" \
+    "receipt: ${r_sha:0:10}   pushing: ${local_sha:0:10}" "Re-run ci-preflight on this commit."
+  [ "$ci" = green ] || fail "local CI is '$ci' for ${local_sha:0:10}" \
+    "'partial' = --quick skipped the slow jobs. 'subset' = --only ran one job." \
+    "'empty' = every job was skipped, so nothing was verified." \
+    "Only a bare 'ci-preflight' run can clear this."
+
+  [ -f "$HIST" ] || echo '[]' > "$HIST"
+  head_pid=$(patch_id "$local_sha")
+  mb=$(git merge-base "$BASE" "$local_sha" 2>/dev/null || echo "")
+  lineage_pids=$(for c in $(git rev-list ${mb:+$mb..}"$local_sha" 2>/dev/null | head -50); do patch_id "$c"; done | sort -u)
+  ancestors=$(git rev-list ${mb:+$mb..}"$local_sha" 2>/dev/null)
+
+  read -r claude codex < <(python3 - "$HIST" "$local_sha" "$head_pid" <<PY
+import json, sys
+hist = json.load(open(sys.argv[1])); sha, head_pid = sys.argv[2], sys.argv[3]
+try:
+    rec = json.load(open(sys.argv[1].replace("adw-review-history.json", "adw-receipt.json")))
+    if rec.get("sha") == sha:
+        hist = [{"who": w, "verdict": r.get("verdict"), "sha": sha}
+                for w, r in rec.get("reviews", {}).items()] + hist
+except Exception:
+    pass
+anc = set("""$ancestors""".split()); pids = set("""$lineage_pids""".split())
+def latest(who, ok):
+    rows = [h for h in hist if h.get("who") == who and ok(h)]
+    return rows[-1]["verdict"] if rows else "none"
+claude = latest("claude", lambda h: h["sha"] == sha or h["sha"] in anc or (h.get("patch_id") and h["patch_id"] in pids))
+codex = latest("codex", lambda h: h["sha"] == sha or (head_pid and h.get("patch_id") == head_pid))
+print(claude, codex)
+PY
+)
+  [ "$claude" = pass ] || fail "no passing claude review for this work (latest: $claude)" \
+    "A claude review of this commit or an ancestor of it is enough; a newer fail overrides it."
+  [ "$codex" = pass ] || fail "no passing codex review of ${local_sha:0:10} (latest: $codex)" \
+    "Codex must review the exact commit pushed, fix commits included."
+  msg="local CI green, claude review on this lineage, codex review of this commit"
+done
+
+[ -n "$msg" ] && printf '\033[32mpre-push: %s\033[0m\n' "$msg" >&2
+exit 0

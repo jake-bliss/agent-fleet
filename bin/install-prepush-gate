@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+#
+# install-prepush-gate — wire prepush-gate into a repo without displacing the
+# hook manager the repo already uses.
+#
+# Writing .git/hooks/pre-push is not enough: a repo with core.hooksPath set (husky
+# does this) ignores .git/hooks entirely, so the gate would silently never run.
+# This points core.hooksPath at <git-common-dir>/adw-hooks and chains: pre-push
+# runs the gate and then, unless disabled, the repo's original pre-push; every
+# other hook the repo had is passed straight through.
+#
+# The original path is saved in git config adw.prevHooksPath, so --uninstall
+# restores exactly what was there. To skip the repo's own pre-push after the gate
+# passes (when ci-preflight already covers it):  git config adw.chainPrePush false
+#
+#   install-prepush-gate [repo ...]       install (defaults to the repos in ci-parity.json)
+#   install-prepush-gate --status [repo ...]
+#   install-prepush-gate --uninstall [repo ...]
+#
+# A package install can reset core.hooksPath to the hook manager's. Re-run this, or
+# check --status, if a push ever goes through ungated; ci-preflight also notices.
+#
+set -uo pipefail
+ADW_HOME="${ADW_HOME:-$HOME/.claude/adw}"
+CONFIG="${CI_PARITY_CONFIG:-$ADW_HOME/ci-parity.json}"
+
+self_dir() {
+  local s="${BASH_SOURCE[0]}" d
+  while [ -L "$s" ]; do
+    d=$(cd "$(dirname "$s")" && pwd); s=$(readlink "$s")
+    case "$s" in /*) ;; *) s="$d/$s" ;; esac
+  done
+  cd "$(dirname "$s")" && pwd
+}
+GATE="$(self_dir)/prepush-gate"
+
+MODE=install
+case "${1:-}" in
+  --status) MODE=status; shift ;;
+  --uninstall) MODE=uninstall; shift ;;
+  -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
+esac
+
+repos=("$@")
+if [ ${#repos[@]} -eq 0 ]; then
+  [ -f "$CONFIG" ] || { echo "install-prepush-gate: no repos given and no $CONFIG" >&2; exit 2; }
+  while IFS= read -r line; do repos+=("$line"); done < <(
+    python3 - "$CONFIG" <<'PY'
+import json, os, sys
+for r in json.load(open(sys.argv[1]))["repos"].values():
+    print(os.path.expanduser(r["path"]))
+PY
+  )
+fi
+
+for repo in "${repos[@]}"; do
+  name=$(basename "$repo")
+  if ! git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    printf '%-34s not a git repo\n' "$name"; continue
+  fi
+  common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+  ours="$common/adw-hooks"
+  cur=$(git -C "$repo" config --get core.hooksPath || true)
+  prev=$(git -C "$repo" config --get adw.prevHooksPath || true)
+
+  if [ "$MODE" = status ]; then
+    if [ "$cur" = "$ours" ] && [ -x "$ours/pre-push" ]; then
+      printf '%-34s \033[32mgated\033[0m   chains -> %s\n' "$name" "${prev:-<default .git/hooks>}"
+    else
+      printf '%-34s \033[31mNOT gated\033[0m  core.hooksPath=%s\n' "$name" "${cur:-<default>}"
+    fi
+    continue
+  fi
+
+  if [ "$MODE" = uninstall ]; then
+    if [ "$cur" = "$ours" ]; then
+      if [ -n "$prev" ]; then git -C "$repo" config core.hooksPath "$prev"
+      else git -C "$repo" config --unset core.hooksPath || true; fi
+      git -C "$repo" config --unset adw.prevHooksPath || true
+      rm -rf "$ours"
+      printf '%-34s restored -> %s\n' "$name" "${prev:-<default>}"
+    else
+      printf '%-34s not gated; nothing to undo\n' "$name"
+    fi
+    continue
+  fi
+
+  if [ -z "$prev" ] && [ "$cur" != "$ours" ]; then
+    prev="$cur"
+    [ -n "$prev" ] && git -C "$repo" config adw.prevHooksPath "$prev"
+  fi
+  case "$prev" in
+    "") prev_rt="$common/hooks" ;;
+    /*) prev_rt="$prev" ;;
+    *)  prev_rt="\$(git rev-parse --show-toplevel)/$prev" ;;
+  esac
+
+  chain_prepush=$(git -C "$repo" config --get adw.chainPrePush || echo true)
+
+  mkdir -p "$ours"
+  cat > "$ours/_run" <<RUN
+#!/usr/bin/env bash
+hook=\$1; shift
+dir="$prev_rt"
+if [ -x "\$dir/\$hook" ]; then exec "\$dir/\$hook" "\$@"; fi
+src="\${dir%/_}/\$hook"
+if [ "\${dir%/_}" != "\$dir" ] && [ -f "\$src" ]; then
+  top=\$(git rev-parse --show-toplevel)
+  if [ ! -f "\$top/node_modules/.modules.yaml" ]; then
+    echo "adw-hooks: skipping \$hook (no node_modules here; install dependencies to enable)" >&2; exit 0
+  fi
+  if command -v mise >/dev/null 2>&1; then exec mise exec -- sh -e "\$src" "\$@"; fi
+  exec sh -e "\$src" "\$@"
+fi
+exit 0
+RUN
+  chmod +x "$ours/_run"
+
+  {
+    printf '#!/usr/bin/env bash\nset -e\n"%s" "$@" || exit $?\n' "$GATE"
+    if [ "$chain_prepush" = false ]; then printf 'exit 0\n'
+    else printf 'exec "%s/_run" pre-push "$@"\n' "$ours"; fi
+  } > "$ours/pre-push"
+  chmod +x "$ours/pre-push"
+
+  passed=0
+  for base in pre-commit prepare-commit-msg commit-msg post-commit post-checkout post-merge pre-rebase; do
+    printf '#!/usr/bin/env bash\nexec "%s/_run" %s "$@"\n' "$ours" "$base" > "$ours/$base"
+    chmod +x "$ours/$base"; passed=$((passed+1))
+  done
+
+  git -C "$repo" config core.hooksPath "$ours"
+  printf '%-34s \033[32mgated\033[0m   chains -> %s  (%s other hook(s) passed through)\n' \
+    "$name" "${prev:-<default .git/hooks>}" "$passed"
+done

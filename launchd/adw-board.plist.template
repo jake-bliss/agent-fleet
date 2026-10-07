@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.example.adw-board</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>__PYTHON__</string>
+		<string>-I</string>
+		<string>__ADW_HOME__/board/board.py</string>
+		<string>--serve</string>
+		<string>4518</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>ADW_HOME</key>
+		<string>__ADW_HOME__</string>
+		<key>HOME</key>
+		<string>__HOME__</string>
+		<key>PATH</key>
+		<string>__HOME__/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>__ADW_HOME__</string>
+	<key>KeepAlive</key>
+	<true/>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>StandardOutPath</key>
+	<string>__ADW_HOME__/board-serve.log</string>
+	<key>StandardErrorPath</key>
+	<string>__ADW_HOME__/board-serve.log</string>
+</dict>
+</plist>

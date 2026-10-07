@@ -1,0 +1,59 @@
+{
+  "repos": {
+    "web-app": {
+      "path": "~/projects/web-app",
+      "paths": ["~/projects/other-workspace/web-app"],
+      "base_branch": "main",
+      "workflows": [".github/workflows/ci.yml"],
+      "default_host": "remote",
+      "db_isolation": {
+        "files": ["config/database.yml"],
+        "requires": ["DATABASE_NAME"],
+        "slug_max": 24,
+        "env": {"DATABASE_NAME": "web_app_test_{slug}"}
+      },
+      "jobs": [
+        {"job": "lint", "name": "rubocop", "cmd": "bundle exec rubocop", "requires": ["bundle"]},
+        {"job": "security", "name": "brakeman", "cmd": "bundle exec brakeman -q --no-pager", "requires": ["bundle"]},
+        {"job": "test", "name": "unit", "cmd": "bin/rails db:test:prepare && bin/rails test",
+         "db": true, "slow": true, "when": ["app/", "config/", "db/", "test/", "Gemfile"],
+         "env": {"RAILS_ENV": "test", "DATABASE_URL": "postgres://postgres:postgres@localhost:5432"}},
+        {"job": "db-check", "name": "schema-reset", "cmd": "bin/rails db:drop db:create db:schema:load",
+         "db": true, "destructive": true, "when": ["db/"]}
+      ]
+    },
+    "frontend": {
+      "path": "~/projects/frontend",
+      "workflows": [".github/workflows/ci-frontend.yml"],
+      "jobs": [
+        {"job": "frontend", "name": "install", "cmd": "pnpm install --frozen-lockfile", "requires": ["node", "pnpm"]},
+        {"job": "frontend", "name": "typecheck", "cmd": "pnpm nx affected -t typecheck", "requires": ["node", "pnpm"],
+         "when": ["apps/", "packages/"]},
+        {"job": "frontend", "name": "build", "cmd": "pnpm nx affected -t build", "dir": ".", "slow": true,
+         "requires": ["node", "pnpm"], "when": ["apps/", "packages/"]}
+      ]
+    }
+  },
+  "hosts": {
+    "remote": {
+      "ssh": "user@ci-box.example",
+      "slots": 1,
+      "pg_container": "ci-pg",
+      "memory_max": "16G",
+      "memory_swap_max": "0",
+      "repos": {
+        "web-app": {
+          "clone": "~/ci/web-app",
+          "worktree": "~/ci/wt/web-app",
+          "db_like": "web_app_test%",
+          "env": {
+            "DATABASE_URL": "postgres://postgres:postgres@localhost:5434",
+            "RAILS_ENV": "test",
+            "PREFLIGHT_PARALLEL": "1"
+          },
+          "prepare": "bundle check >/dev/null 2>&1 || bundle install --quiet"
+        }
+      }
+    }
+  }
+}

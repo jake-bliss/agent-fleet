@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#
+# ci-preflight-runner — the remote half of `ci-preflight --host`. ci-preflight
+# copies it next to a copy of itself on the remote CI box and runs:
+#   bash ci-preflight-runner <run.env>
+#
+# <run.env> (written by ci-preflight, %q-quoted) sets: CLONE WT_BASE SLOTS SHA
+# BUNDLE REPO_KEY PREP RUN_ENV RARGS PG_CONTAINER PG_LIKE BASE_BRANCH.
+#
+# Linux only (uses flock and /proc). Each run holds an flock on one of SLOTS
+# worktrees (<WT_BASE>-<n>), waits first-come-first-served when all are busy, and
+# starts and ends by killing any process whose cwd is inside the slot and dropping
+# the slot's test databases, so a crashed run cannot poison the next.
+#
+set -uo pipefail
+case "${1:-}" in -h|--help|"") awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;; esac
+# shellcheck disable=SC1090
+source "$1"
+CLONE=$(eval echo "$CLONE"); WT_BASE=$(eval echo "$WT_BASE")
+RARGS=${RARGS//\$HOME/$HOME}
+BASE_BRANCH=${BASE_BRANCH:-main}
+mkdir -p "$(dirname "$WT_BASE")"
+cd "$HOME" || exit
+
+QDIR="$WT_BASE.queue"; mkdir -p "$QDIR"
+TICKET="$QDIR/$(date +%s%N)-$$"; : > "$TICKET"
+trap 'rm -f "$TICKET"' EXIT
+SLOT=""; shown=""
+while [ -z "$SLOT" ]; do
+  ahead=0
+  for t in $(ls "$QDIR" | sort); do
+    [ "$QDIR/$t" = "$TICKET" ] && break
+    kill -0 "${t##*-}" 2>/dev/null && ahead=$((ahead+1)) || rm -f "$QDIR/$t"
+  done
+  if [ "$ahead" -lt "$SLOTS" ]; then
+    for i in $(seq 1 "$SLOTS"); do
+      exec 9>"$WT_BASE.slot$i.lock"
+      if flock -n 9; then SLOT=$i; break; fi
+      exec 9>&-
+    done
+  fi
+  if [ -z "$SLOT" ]; then
+    [ "$shown" = "$ahead" ] || echo "runner: all $SLOTS slots busy; queued, $ahead run(s) ahead" >&2
+    shown=$ahead; sleep 5
+  fi
+done
+rm -f "$TICKET"
+WT="$WT_BASE-$SLOT"
+echo "runner: slot $SLOT ($WT)" >&2
+
+sweep() {
+  local p c n=0
+  for p in /proc/[0-9]*; do
+    c=$(readlink "$p/cwd" 2>/dev/null) || continue
+    case "$c" in "$WT"|"$WT"/*) kill -9 "${p#/proc/}" 2>/dev/null && n=$((n+1)) ;; esac
+  done
+  [ "$n" -eq 0 ] || echo "runner: killed $n leftover process(es) in slot $SLOT" >&2
+}
+
+drop_slot_dbs() {
+  [ -n "${PG_CONTAINER:-}" ] && [ -n "${PG_LIKE:-}" ] || return 0
+  local slug
+  slug=$(basename "$WT" | tr -c 'A-Za-z0-9' '_' | tr 'A-Z' 'a-z' | cut -c1-24)
+  docker exec "$PG_CONTAINER" psql -U postgres -Atc \
+    "select datname from pg_database where datname like '${PG_LIKE}' and strpos(datname, '_${slug}_') > 0" 2>/dev/null \
+  | while read -r d; do
+      [ -n "$d" ] && docker exec "$PG_CONTAINER" psql -U postgres -qAtc "drop database if exists \"$d\" with (force)" >/dev/null 2>&1
+    done
+}
+
+sweep
+drop_slot_dbs
+
+if [ -n "$BUNDLE" ]; then git -C "$CLONE" fetch -q "$BUNDLE" "$SHA" || exit 2; rm -f "$BUNDLE"; fi
+git -C "$CLONE" update-ref refs/preflight/base "$SHA"
+STAMP="$(git -C "$CLONE" rev-parse --absolute-git-dir)/adw-origin-fetched"
+if [ -z "$(find "$STAMP" -mmin -10 2>/dev/null)" ]; then
+  if timeout 90 git -C "$CLONE" fetch -q origin "$BASE_BRANCH"; then touch "$STAMP"
+  else echo "runner: could not refresh origin/$BASE_BRANCH; diff-scoped jobs may over-select" >&2; fi
+fi
+if [ ! -d "$WT" ]; then
+  git -C "$CLONE" worktree add --detach -f "$WT" "$SHA" >/dev/null 2>&1 || exit 2
+else
+  git -C "$WT" reset -q --hard "$SHA" && git -C "$WT" clean -fdq || exit 2
+fi
+
+cd "$WT" || exit
+if [ -n "$PREP" ]; then ( eval "$PREP" ) >&2 || { echo "runner: prepare failed" >&2; cd "$HOME" || exit; sweep; exit 3; }; fi
+cd "$WT" || exit
+# shellcheck disable=SC2086
+env CI_PARITY_CONFIG="$HOME/.cache/adw/ci-parity.json" $RUN_ENV bash "$HOME/.cache/adw/ci-preflight" $RARGS
+rc=$?
+RUN_ID=$(basename "$1" .env); RUN_ID=${RUN_ID#run-}
+find "$HOME/.cache/adw" -maxdepth 1 -name 'logs-*' -mtime +0 -exec rm -rf {} + 2>/dev/null
+if [ "$rc" -ne 0 ]; then
+  GD=$(git -C "$WT" rev-parse --absolute-git-dir 2>/dev/null)
+  mkdir -p "$HOME/.cache/adw/logs-$RUN_ID"
+  [ -n "$GD" ] && cp "$GD"/preflight-*.log "$HOME/.cache/adw/logs-$RUN_ID/" 2>/dev/null
+fi
+cd "$HOME" || exit; sweep
+exit $rc

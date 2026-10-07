@@ -1,0 +1,483 @@
+#!/usr/bin/env bash
+#
+# ci-preflight — run the repo's PR CI locally, before anything is pushed.
+#
+# Remote CI and review bots are shared, rate-limited resources. Everything they
+# would catch on a first push (lint, security scans, typecheck, build, the test
+# suite) runs here first, in the order CI runs it, from $ADW_HOME/ci-parity.json.
+# A push should be a formality, not a probe.
+#
+# It writes a receipt (<git-dir>/adw-receipt.json) naming the exact commit it
+# verified. The pre-push hook reads it, so a green run cannot be inherited by a
+# later commit. Status values: green, red, partial (--quick), subset (--only),
+# empty (no job ran), tooling (a required tool was missing: not a code failure).
+# Only green passes the gate.
+#
+# Usage (from inside the worktree):
+#   ci-preflight                      run every job CI would run for this diff
+#   ci-preflight --quick              skip jobs marked slow; records "partial"
+#   ci-preflight --include-destructive   also run jobs that drop a local database
+#   ci-preflight --only <name>        run one job by name; records "subset"
+#   ci-preflight --host <name>        run on a remote CI box from ci-parity.json hosts
+#   ci-preflight --local              ignore the repo's default_host and run here
+#   ci-preflight --audit              report config drift against the workflows
+#   ci-preflight --show               print the current receipt and exit
+#   ci-preflight --no-lock            do not serialise DB-backed jobs per repo
+#   ci-preflight --no-isolate-db      do not give the worktree a private test database
+#
+set -uo pipefail
+
+ADW_HOME="${ADW_HOME:-$HOME/.claude/adw}"
+CONFIG="${CI_PARITY_CONFIG:-$ADW_HOME/ci-parity.json}"
+QUICK=""; DESTRUCTIVE=""; ONLY=""; AUDIT=""; SHOW=""; NOLOCK=""; HOST=""; EMIT_JSON=""; LOCAL=""
+REPO_KEY_OVERRIDE=""; CHANGED_FILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --quick) QUICK=1; shift ;;
+    --include-destructive) DESTRUCTIVE=1; shift ;;
+    --only) ONLY="${2:?--only needs a job name}"; shift 2 ;;
+    --host) HOST="${2:?--host needs a name from ci-parity.json hosts}"; shift 2 ;;
+    --local) LOCAL=1; shift ;;
+    --emit-json) EMIT_JSON=1; shift ;;
+    --repo-key) REPO_KEY_OVERRIDE="${2:?--repo-key needs a repo name}"; shift 2 ;;
+    --changed-file) CHANGED_FILE="${2:?--changed-file needs a path}"; shift 2 ;;
+    --no-lock) NOLOCK=1; shift ;;
+    --no-isolate-db) NO_ISOLATE_DB=1; shift ;;
+    --audit) AUDIT=1; shift ;;
+    --show) SHOW=1; shift ;;
+    -h|--help) awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;;
+    *) echo "ci-preflight: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+die() { printf '\033[31mci-preflight: %s\033[0m\n' "$*" >&2; exit 2; }
+log() { [ -n "${QUIET:-}" ] || printf 'ci-preflight: %s\n' "$*" >&2; }
+
+self_dir() {
+  local s="${BASH_SOURCE[0]}" d
+  while [ -L "$s" ]; do
+    d=$(cd "$(dirname "$s")" && pwd); s=$(readlink "$s")
+    case "$s" in /*) ;; *) s="$d/$s" ;; esac
+  done
+  cd "$(dirname "$s")" && pwd
+}
+SELF_DIR="$(self_dir)"
+
+ensure_node() {
+  local c
+  command -v node >/dev/null 2>&1 && return 0
+  if command -v mise >/dev/null 2>&1; then
+    c=$(mise which node 2>/dev/null) || c=""
+    if [ -n "$c" ] && [ -x "$c" ]; then
+      PATH="$(dirname "$c"):$PATH"; export PATH
+      log "node was not on PATH; using mise's ($c)"; return 0
+    fi
+  fi
+  for c in "$HOME"/.nvm/versions/node/*/bin/node "$HOME"/.local/share/fnm/node-versions/*/installation/bin/node \
+           "$HOME"/.asdf/shims/node /opt/homebrew/bin/node /usr/local/bin/node; do
+    if [ -x "$c" ]; then
+      PATH="$(dirname "$c"):$PATH"; export PATH
+      log "node was not on PATH; using $c"; return 0
+    fi
+  done
+  return 1
+}
+
+[ -f "$CONFIG" ] || die "missing config: $CONFIG (copy config/ci-parity.example.json there)"
+git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
+ensure_node || true
+
+WT=$(git rev-parse --show-toplevel)
+GITDIR=$(git rev-parse --absolute-git-dir)
+RECEIPT="$GITDIR/adw-receipt.json"
+SHA=$(git rev-parse HEAD)
+BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || echo "(detached)")
+
+if [ -n "$(git config --get adw.prevHooksPath || true)" ] \
+   && [ "$(git config --get core.hooksPath || true)" != "$(git rev-parse --path-format=absolute --git-common-dir)/adw-hooks" ]; then
+  log "push gate was reset (likely by a package install); reinstalling"
+  "$SELF_DIR/install-prepush-gate" "$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')" >&2 || true
+fi
+
+if [ -n "$SHOW" ]; then
+  [ -f "$RECEIPT" ] && cat "$RECEIPT" || echo "no receipt at $RECEIPT"
+  exit 0
+fi
+
+PRIMARY=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+if [ -n "$REPO_KEY_OVERRIDE" ]; then REPO_KEY="$REPO_KEY_OVERRIDE"; else
+REPO_KEY=$(python3 - "$CONFIG" "$PRIMARY" <<'PY'
+import json, os, sys
+cfg, primary = json.load(open(sys.argv[1])), os.path.realpath(sys.argv[2])
+for key, r in cfg["repos"].items():
+    candidates = [r["path"]] + list(r.get("paths") or [])
+    if any(os.path.realpath(os.path.expanduser(c)) == primary for c in candidates):
+        print(key); break
+PY
+)
+fi
+[ -n "$REPO_KEY" ] || die "no ci-parity entry for $PRIMARY; add one to $CONFIG"
+
+if [ -n "$AUDIT" ]; then
+  python3 - "$CONFIG" "$PRIMARY" "$REPO_KEY" <<'PY'
+import json, os, sys, time
+cfg, primary, key = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+cfg_m = os.path.getmtime(sys.argv[1])
+print(f"config last edited {time.ctime(cfg_m)}\n")
+stale = False
+for wf in cfg["repos"][key].get("workflows", []):
+    p = os.path.join(os.path.expanduser(primary), wf)
+    if not os.path.exists(p):
+        print(f"  MISSING  {wf}"); stale = True; continue
+    m = os.path.getmtime(p)
+    flag = "DRIFT  " if m > cfg_m else "ok     "
+    if m > cfg_m: stale = True
+    print(f"  {flag}{wf}   (workflow {time.ctime(m)})")
+print("\nA workflow newer than the config may have added or changed a job."
+      if stale else "\nConfig is at least as new as every workflow.")
+PY
+  exit 0
+fi
+
+if [ -z "$HOST" ] && [ -z "$LOCAL" ] && [ -z "$EMIT_JSON" ] && [ -z "$REPO_KEY_OVERRIDE" ]; then
+  DEF_HOST=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['repos'][sys.argv[2]].get('default_host',''))" "$CONFIG" "$REPO_KEY")
+  if [ -n "$DEF_HOST" ]; then
+    DEF_SSH=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['hosts'][sys.argv[2]]['ssh'])" "$CONFIG" "$DEF_HOST")
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+      log "working tree dirty; running locally (the remote box tests HEAD only)"
+    elif ! ssh -o ConnectTimeout=3 -o BatchMode=yes "$DEF_SSH" true </dev/null 2>/dev/null; then
+      log "$DEF_HOST unreachable; running locally"
+    else
+      HOST="$DEF_HOST"
+    fi
+  fi
+fi
+
+if [ -n "$HOST" ]; then
+  { read -r H_SSH; read -r H_CLONE; read -r H_WT; read -r H_SLOTS; read -r H_PG; read -r H_MEM; read -r H_SWAP; read -r H_ENV; read -r H_PREP; read -r H_LIKE; read -r H_BASE; } < <(python3 - "$CONFIG" "$HOST" "$REPO_KEY" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+h = cfg.get("hosts", {}).get(sys.argv[2])
+r = (h or {}).get("repos", {}).get(sys.argv[3]) if isinstance(h, dict) else None
+if not r: sys.exit(0)
+env = " ".join(f"{k}={v}" for k, v in r.get("env", {}).items())
+base = cfg["repos"][sys.argv[3]].get("base_branch", "main")
+for v in (h["ssh"], r["clone"], r["worktree"], h.get("slots", 1), h.get("pg_container", ""),
+          h.get("memory_max", ""), h.get("memory_swap_max", "0"), env, r.get("prepare", ""),
+          r.get("db_like", ""), base):
+    print(v)
+PY
+)
+  [ -n "${H_SSH:-}" ] || die "host '$HOST' has no entry for repo '$REPO_KEY' in $CONFIG"
+  [ -z "$(git status --porcelain --untracked-files=no)" ] \
+    || die "working tree is dirty; the remote box tests HEAD. Commit first, or run with --local."
+
+  log "remote $HOST ($H_SSH): $REPO_KEY @ ${SHA:0:10}"
+  RUN_ID="${SHA:0:12}-$$"
+  ssh "$H_SSH" 'mkdir -p ~/.cache/adw/incoming' </dev/null || die "cannot reach $H_SSH"
+  scp -q "$SELF_DIR/ci-preflight" "$SELF_DIR/ci-preflight-runner" "$CONFIG" \
+      "$H_SSH:.cache/adw/incoming/" || die "could not sync the runner scripts"
+  ssh "$H_SSH" "cd ~/.cache/adw && mv -f incoming/ci-preflight incoming/ci-preflight-runner . && mv -f incoming/$(basename "$CONFIG") ci-parity.json" </dev/null \
+    || die "could not install the runner scripts"
+
+  RBASE=$(ssh "$H_SSH" "git -C $H_CLONE rev-parse refs/preflight/base 2>/dev/null || git -C $H_CLONE rev-parse origin/$H_BASE 2>/dev/null" </dev/null | tr -d '\r')
+  git cat-file -e "$RBASE" 2>/dev/null || RBASE=$(ssh "$H_SSH" "git -C $H_CLONE rev-parse origin/$H_BASE" </dev/null | tr -d '\r')
+  git cat-file -e "$RBASE" 2>/dev/null || die "remote base $RBASE unknown here; fetch origin and retry"
+  git merge-base --is-ancestor "$RBASE" HEAD 2>/dev/null || RBASE=$(git merge-base "$RBASE" HEAD)
+  NSHIP=$(git rev-list --count "$RBASE..HEAD")
+  log "shipping $NSHIP commit(s)"
+  R_BUNDLE=""
+  if [ "$NSHIP" -gt 0 ]; then
+    R_BUNDLE="/tmp/preflight-$REPO_KEY-$RUN_ID.bundle"
+    git bundle create - "$RBASE..HEAD" 2>/dev/null \
+      | ssh "$H_SSH" "cat > $R_BUNDLE" || die "bundle transfer failed"
+  fi
+
+  LBASE=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || { git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main; } || echo origin/master)
+  git rev-parse --verify --quiet "$LBASE" >/dev/null || die "no $LBASE here to diff against; fetch origin"
+  git diff --name-only "$LBASE"...HEAD \
+    | ssh "$H_SSH" "cat > .cache/adw/preflight-changed-$RUN_ID.txt" || die "could not ship the changed-file list"
+
+  RARGS="--emit-json --repo-key $REPO_KEY --changed-file \$HOME/.cache/adw/preflight-changed-$RUN_ID.txt"; [ -n "$QUICK" ] && RARGS="$RARGS --quick"; [ -n "$ONLY" ] && RARGS="$RARGS --only $ONLY"
+  {
+    printf 'CLONE=%q\nWT_BASE=%q\nSLOTS=%q\nSHA=%q\nBUNDLE=%q\nREPO_KEY=%q\n' \
+      "$H_CLONE" "$H_WT" "${H_SLOTS:-1}" "$SHA" "$R_BUNDLE" "$REPO_KEY"
+    printf 'PREP=%q\nRUN_ENV=%q\nRARGS=%q\nPG_CONTAINER=%q\nPG_LIKE=%q\nBASE_BRANCH=%q\n' \
+      "$H_PREP" "$H_ENV" "$RARGS" "$H_PG" "$H_LIKE" "$H_BASE"
+  } | ssh "$H_SSH" "cat > .cache/adw/run-$RUN_ID.env" || die "could not ship the run file"
+  set +e
+  R_CAP=""; [ -n "$H_MEM" ] && R_CAP="systemd-run --user --scope --quiet -p MemoryMax=$H_MEM -p MemorySwapMax=${H_SWAP:-0}"
+  ssh "$H_SSH" "bash -lc '$R_CAP bash ~/.cache/adw/ci-preflight-runner ~/.cache/adw/run-$RUN_ID.env; rc=\$?; rm -f ~/.cache/adw/run-$RUN_ID.env ~/.cache/adw/preflight-changed-$RUN_ID.txt; exit \$rc'" \
+    </dev/null > "$GITDIR/preflight-remote.json" 2>"$GITDIR/preflight-remote.err"
+  rc=$?
+  set -e
+  grep -q '^{' "$GITDIR/preflight-remote.json" 2>/dev/null || {
+    sed 's/^/    /' "$GITDIR/preflight-remote.err" | tail -20 >&2
+    die "the remote box returned no receipt (exit $rc)"
+  }
+  grep -v '^{' "$GITDIR/preflight-remote.json" | sed 's/^/  /' || true
+  grep -E '^runner:' "$GITDIR/preflight-remote.err" | sed 's/^/  /' >&2 || true
+
+  rm -f "$GITDIR"/preflight-*.log
+  if [ "$rc" -ne 0 ]; then
+    scp -q "$H_SSH:.cache/adw/logs-$RUN_ID/*.log" "$GITDIR/" 2>/dev/null || true
+    ssh "$H_SSH" "rm -rf ~/.cache/adw/logs-$RUN_ID" </dev/null 2>/dev/null || true
+  fi
+  python3 - "$RECEIPT" "$GITDIR/preflight-remote.json" "$SHA" "$BRANCH" "$REPO_KEY" "$HOST" "$GITDIR" <<'PY'
+import json, os, sys, time
+receipt, remote, sha, branch, repo, host, gitdir = sys.argv[1:8]
+raw = [l for l in open(remote).read().splitlines() if l.startswith("{")]
+r = json.loads(raw[-1]) if raw else {"ci": {"status": "red", "jobs": []}}
+prev = {}
+if os.path.exists(receipt):
+    try: prev = json.load(open(receipt))
+    except Exception: prev = {}
+reviews = prev.get("reviews", {}) if prev.get("sha") == sha else {}
+ci = r.get("ci", {}); ci["host"] = host; ci["at"] = int(time.time())
+for j in ci.get("jobs", []):
+    if j.get("log"):
+        local = os.path.join(gitdir, os.path.basename(j["log"]))
+        if os.path.exists(local):
+            j["remote_log"] = j["log"]; j["log"] = local
+json.dump({"sha": sha, "branch": branch, "repo": repo, "ci": ci, "reviews": reviews},
+          open(receipt, "w"), indent=2)
+print(f"local CI {ci.get('status')} for {sha[:10]} (ran on {host})")
+for j in ci.get("jobs", []):
+    if j.get("status") in ("fail", "error") and j.get("remote_log"):
+        print(f"  log ({j['name']}): {j['log']}")
+PY
+  exit $rc
+fi
+
+BASE=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || { git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main; } || echo origin/master)
+git rev-parse --verify --quiet "$BASE" >/dev/null || BASE=""
+CHANGED=""
+if [ -n "$CHANGED_FILE" ]; then
+  [ -f "$CHANGED_FILE" ] || die "changed-file list missing: $CHANGED_FILE"
+  CHANGED=$(cat "$CHANGED_FILE"); BASE="(shipped by the author)"
+fi
+[ -z "$CHANGED_FILE" ] && [ -n "$BASE" ] && CHANGED=$(git diff --name-only "$BASE"...HEAD 2>/dev/null)
+[ -n "$CHANGED" ] || [ -n "$CHANGED_FILE" ] || CHANGED=$(git diff --name-only HEAD 2>/dev/null)
+
+echo "== repo:$REPO_KEY  branch:$BRANCH  sha:${SHA:0:10}"
+echo "== base:${BASE:-<none>}  changed files:$(printf '%s\n' "$CHANGED" | grep -c . || true)"
+[ -n "$QUICK" ] && echo "== --quick: slow jobs (suites, builds) will be SKIPPED; not a full gate"
+
+JOBS=$(python3 - "$CONFIG" "$REPO_KEY" <<'PY'
+import json, sys
+cfg = json.load(open(sys.argv[1]))
+for j in cfg["repos"][sys.argv[2]]["jobs"]:
+    env = " ".join(f"{k}={v}" for k, v in j.get("env", {}).items())
+    print("\x1f".join([j["job"], j["name"], j["cmd"], j.get("dir", ""),
+                       "1" if j.get("slow") else "", "1" if j.get("destructive") else "",
+                       ",".join(j.get("when", [])), env,
+                       "1" if j.get("db") else "", ",".join(j.get("requires", []))]))
+PY
+)
+
+LOCKDIR="${TMPDIR:-/tmp}/ci-preflight-${REPO_KEY}.lock"
+LOCK_HELD=""
+release_lock() { [ -n "$LOCK_HELD" ] && rm -rf "$LOCKDIR"; return 0; }
+trap release_lock EXIT
+trap 'release_lock; exit 130' INT
+trap 'release_lock; exit 143' TERM
+
+acquire_lock() {
+  [ -n "$LOCK_HELD" ] && return 0
+  [ -n "$NOLOCK" ] && return 0
+  local waited=0 owner
+  until mkdir "$LOCKDIR" 2>/dev/null; do
+    owner=$(cat "$LOCKDIR/pid" 2>/dev/null)
+    if [ -z "$owner" ] || ! kill -0 "$owner" 2>/dev/null; then
+      rm -rf "$LOCKDIR"; continue
+    fi
+    [ "$waited" = 0 ] && printf '  \033[2m... waiting for the %s test database (held by pid %s)\033[0m\n' \
+      "$REPO_KEY" "$owner"
+    waited=$((waited+5)); sleep 5
+  done
+  echo $$ > "$LOCKDIR/pid"; LOCK_HELD=1
+}
+
+DB_ISO_ENV=""; DB_ISO_LABEL=""
+detect_db_isolation() {
+  local out
+  [ -n "${NO_ISOLATE_DB:-}" ] && return 1
+  out=$(python3 - "$CONFIG" "$REPO_KEY" "$WT" <<'PY'
+import hashlib, json, os, re, sys, zlib
+cfg, key, wt = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+iso = cfg["repos"][key].get("db_isolation")
+if not iso:
+    sys.exit(1)
+files = [os.path.join(wt, f) for f in iso.get("files", [])]
+texts = [open(f).read() for f in files if os.path.exists(f)]
+if not texts or not all(any(var in t for t in texts) for var in iso.get("requires", [])):
+    sys.exit(1)
+slug = re.sub(r"[^a-z0-9]", "_", os.path.basename(wt).lower())[:iso.get("slug_max", 24)]
+slug = f"{slug}_{zlib.crc32(wt.encode()) % 10**6:06d}"
+env = {k: v.replace("{slug}", slug) for k, v in iso["env"].items()}
+print(" ".join(f"{k}={v}" for k, v in env.items()))
+print(next(iter(env.values())))
+PY
+) || return 1
+  DB_ISO_ENV=$(printf '%s\n' "$out" | sed -n 1p)
+  DB_ISO_LABEL=$(printf '%s\n' "$out" | sed -n 2p)
+  return 0
+}
+detect_db_isolation || true
+if [ -n "$DB_ISO_ENV" ]; then
+  printf '  \033[2mtest db: %s (private to this worktree; no lock)\033[0m\n' "$DB_ISO_LABEL"
+fi
+
+RESULTS=""; FAILED=0; TOOLERR=0; RAN=0
+PAR_JOBS=""; JOBN=0
+
+record_failure() {
+  local job=$1 name=$2 rc=$3 secs=$4 log=$5
+  if [ "$rc" = 127 ]; then
+    printf '\033[33mTOOLING\033[0m  %ss   command not found; not a code failure   %s\n' "$secs" "$log"
+    RESULTS="$RESULTS{\"job\":\"$job\",\"name\":\"$name\",\"status\":\"error\",\"reason\":\"tooling\",\"log\":\"$log\"},"
+    TOOLERR=$((TOOLERR+1))
+  else
+    printf '\033[31mFAIL\033[0m  %ss   %s\n' "$secs" "$log"
+    RESULTS="$RESULTS{\"job\":\"$job\",\"name\":\"$name\",\"status\":\"fail\",\"log\":\"$log\"},"
+    FAILED=$((FAILED+1))
+  fi
+  tail -15 "$log" | sed 's/^/      /'
+}
+
+while IFS=$'\x1f' read -r job name cmd dir slow destructive when env dbflag requires; do
+  [ -n "$name" ] || continue
+  [ -n "$ONLY" ] && [ "$ONLY" != "$name" ] && continue
+
+  skip=""
+  if [ -n "$when" ] && [ -n "$CHANGED" ]; then
+    hit=""
+    IFS=',' read -ra prefixes <<< "$when"
+    for pre in "${prefixes[@]}"; do
+      printf '%s\n' "$CHANGED" | grep -q "^$pre" && { hit=1; break; }
+    done
+    [ -n "$hit" ] || skip="paths"
+  fi
+  if [ -z "$skip" ]; then
+    if [ -n "$slow" ] && [ -n "$QUICK" ]; then skip="quick"
+    elif [ -n "$destructive" ] && [ -z "$DESTRUCTIVE" ]; then skip="destructive"; fi
+  fi
+
+  if [ -n "$skip" ]; then
+    printf '  \033[2m- %-14s %-18s skipped (%s)\033[0m\n' "$job" "$name" "$skip"
+    RESULTS="$RESULTS{\"job\":\"$job\",\"name\":\"$name\",\"status\":\"skip\",\"reason\":\"$skip\"},"
+    continue
+  fi
+
+  missing=""
+  if [ -n "$requires" ]; then
+    IFS=',' read -ra rq <<< "$requires"
+    for t in "${rq[@]}"; do command -v "$t" >/dev/null 2>&1 || missing="$missing $t"; done
+  fi
+  if [ -n "$missing" ]; then
+    printf '  \033[33m! %-14s %-18s TOOLING: missing%s (not a code failure)\033[0m\n' "$job" "$name" "$missing"
+    RESULTS="$RESULTS{\"job\":\"$job\",\"name\":\"$name\",\"status\":\"error\",\"reason\":\"tooling\"},"
+    TOOLERR=$((TOOLERR+1))
+    continue
+  fi
+
+  case "$env$dbflag" in *DATABASE_URL*|*1*) [ -n "$DB_ISO_ENV" ] || acquire_lock ;; esac
+
+  rundir="$WT"; [ -n "$dir" ] && rundir="$WT/$dir"
+  log="$GITDIR/preflight-$name.log"
+
+  if [ -n "${PREFLIGHT_PARALLEL:-}" ] && { [ -z "$dbflag$env" ] || [ -n "$DB_ISO_ENV" ]; }; then
+    JOBN=$((JOBN+1))
+    job_db_env="$DB_ISO_ENV"
+    case "$env$dbflag" in *DATABASE_URL*|*1*)
+      [ -n "$DB_ISO_ENV" ] && job_db_env=$(printf '%s' "$DB_ISO_ENV" | sed -E "s/=([^ ]+)/=\\1_j$JOBN/g") ;;
+    esac
+    (
+      st=$(date +%s)
+      ( cd "$rundir" && { [ -z "$env" ] || export $env; } \
+          && { [ -z "$job_db_env" ] || export $job_db_env; } \
+          && eval "$cmd" ) >"$log" 2>&1
+      rc=$?
+      printf '%s %s\n' "$rc" "$(( $(date +%s) - st ))" > "$GITDIR/preflight-$name.result"
+    ) &
+    PAR_JOBS="$PAR_JOBS$job"$'\x1f'"$name"$'\n'
+    continue
+  fi
+
+  printf '  \033[36m> %-14s %-18s\033[0m' "$job" "$name"
+  start=$(date +%s)
+  ( cd "$rundir" && { [ -z "$env" ] || export $env; } \
+      && { [ -z "$DB_ISO_ENV" ] || export $DB_ISO_ENV; } \
+      && eval "$cmd" ) >"$log" 2>&1
+  rc=$?
+  secs=$(( $(date +%s) - start ))
+  if [ "$rc" -eq 0 ]; then
+    printf '\033[32mpass\033[0m  %ss\n' "$secs"
+    RESULTS="$RESULTS{\"job\":\"$job\",\"name\":\"$name\",\"status\":\"pass\",\"seconds\":$secs},"
+  else
+    record_failure "$job" "$name" "$rc" "$secs" "$log"
+  fi
+  RAN=$((RAN+1))
+done <<< "$JOBS"
+
+if [ -n "$PAR_JOBS" ]; then
+  wait
+  while IFS=$'\x1f' read -r job name; do
+    [ -n "$name" ] || continue
+    log="$GITDIR/preflight-$name.log"
+    read -r rc secs < "$GITDIR/preflight-$name.result" 2>/dev/null || { rc=1; secs=0; }
+    rm -f "$GITDIR/preflight-$name.result"
+    printf '  \033[36m> %-14s %-18s\033[0m' "$job" "$name"
+    if [ "$rc" = 0 ]; then
+      printf '\033[32mpass\033[0m  %ss (parallel)\n' "$secs"
+      RESULTS="$RESULTS{\"job\":\"$job\",\"name\":\"$name\",\"status\":\"pass\",\"seconds\":$secs},"
+    else
+      record_failure "$job" "$name" "$rc" "$secs" "$log"
+    fi
+    RAN=$((RAN+1))
+  done <<< "$PAR_JOBS"
+fi
+
+STATUS=green
+[ "$TOOLERR" -gt 0 ] && STATUS=tooling
+[ "$FAILED" -gt 0 ] && STATUS=red
+[ -n "$QUICK" ] && [ "$STATUS" = green ] && STATUS=partial
+[ -n "$ONLY" ]  && [ "$STATUS" = green ] && STATUS=subset
+[ "$RAN" -eq 0 ] && [ "$STATUS" = green ] && STATUS=empty
+
+RECEIPT_OUT="$RECEIPT"; [ -n "$EMIT_JSON" ] && RECEIPT_OUT="-"
+python3 - "$RECEIPT_OUT" "$SHA" "$BRANCH" "$REPO_KEY" "$STATUS" "${RESULTS%,}" <<'PY'
+import json, os, sys, time
+path, sha, branch, repo, status, results = sys.argv[1:7]
+prev = {}
+if os.path.exists(path):
+    try: prev = json.load(open(path))
+    except Exception: prev = {}
+reviews = prev.get("reviews", {}) if prev.get("sha") == sha else {}
+doc = {"sha": sha, "branch": branch, "repo": repo,
+       "ci": {"status": status, "at": int(time.time()),
+              "jobs": json.loads("[" + results + "]") if results else []},
+       "reviews": reviews}
+if path == "-":
+    print(json.dumps(doc))
+else:
+    json.dump(doc, open(path, "w"), indent=2)
+PY
+
+echo
+if [ "$FAILED" -gt 0 ]; then
+  printf '\033[31m== %s job(s) failed; fix before pushing\033[0m\n' "$FAILED"
+  [ "$TOOLERR" -gt 0 ] && printf '\033[33m== %s more job(s) could not run: tooling missing, not a code failure\033[0m\n' "$TOOLERR"
+  exit 1
+fi
+if [ "$TOOLERR" -gt 0 ]; then
+  printf '\033[33m== %s job(s) could not run because a tool is missing (not a code failure). Install it, or fix PATH, and re-run.\033[0m\n' "$TOOLERR"
+  exit 3
+fi
+printf '\033[32m== local CI %s for %s\033[0m (%s ran)\n' "$STATUS" "${SHA:0:10}" "$RAN"
+case "$STATUS" in
+  partial) echo "   --quick left the slow jobs unverified; the pre-push gate will still block." ;;
+  empty)   echo "   no job ran; nothing was verified and the pre-push gate will block. Docs-only change? See docs/ci-gate.md." ;;
+  subset)  echo "   --only verified one job; the pre-push gate will still block. Run it bare to clear the gate." ;;
+esac
+exit 0

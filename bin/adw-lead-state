@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+#
+# adw-lead-state — deterministic state for an epic: scaffold, PR polling, ready set.
+#
+# /adw-lead plans an epic and cuts it into segments (a dependency DAG). This script
+# owns the code-only parts: state files, PR-status polling, and which segments may
+# be dispatched now. Reasoning and human gates live in the skill.
+#
+# State lives in $ADW_HOME/epics/<epic>/graph.json (default ADW_HOME: ~/.claude/adw).
+# Repos resolve through $ADW_HOME/manifest.json.
+#
+# Usage:
+#   adw-lead-state init   <epic> <repo-key> "<goal>"   scaffold epic state
+#   adw-lead-state reconcile <epic>                    poll PRs, update statuses, recompute ready
+#   adw-lead-state status <epic>                       print the DAG status table
+#   adw-lead-state ready  <epic>                       print dispatchable segment ids (respects budget)
+#
+set -euo pipefail
+
+ADW_HOME="${ADW_HOME:-$HOME/.claude/adw}"
+EPICS_DIR="$ADW_HOME/epics"
+MANIFEST="$ADW_HOME/manifest.json"
+
+case "${1:-}" in -h|--help|"") awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;; esac
+
+CMD="${1:?init|reconcile|status|ready}"
+EPIC="${2:?epic name}"
+EPIC_DIR="$EPICS_DIR/$EPIC"
+GRAPH="$EPIC_DIR/graph.json"
+
+die() { echo "adw-lead-state: $*" >&2; exit 1; }
+
+case "$CMD" in
+init)
+  REPO_KEY="${3:?repo-key}"; GOAL="${4:?goal}"
+  [ -d "$EPIC_DIR" ] && die "epic exists: $EPIC_DIR"
+  mkdir -p "$EPIC_DIR/briefs"
+  python3 - "$EPIC" "$REPO_KEY" "$GOAL" "$GRAPH" <<'PY'
+import json, sys
+epic, repo, goal, graph = sys.argv[1:5]
+json.dump({"epic": epic, "goal": goal, "repo": repo, "max_parallel": 3, "segments": []},
+          open(graph, "w"), indent=2)
+PY
+  printf '# Epic: %s\n\n**Goal:** %s\n**Repo:** %s\n\n## Success criteria\n- [ ] (fill at the frame gate)\n\n## Scope fences\n- \n' "$EPIC" "$GOAL" "$REPO_KEY" > "$EPIC_DIR/plan.md"
+  printf '# Decision log: %s\n\nAppend each human gate decision: what, choice, why, date.\n' "$EPIC" > "$EPIC_DIR/decisions.md"
+  echo "scaffolded $EPIC_DIR (plan.md, graph.json, briefs/, decisions.md)"
+  ;;
+
+reconcile|status|ready)
+  [ -f "$GRAPH" ] || die "no epic '$EPIC' (run: adw-lead-state init $EPIC <repo-key> \"<goal>\")"
+  MODE="$CMD" python3 - "$GRAPH" "$MANIFEST" <<'PY'
+import json, os, subprocess, sys
+graph_path, manifest_path = sys.argv[1], sys.argv[2]
+mode = os.environ["MODE"]
+g = json.load(open(graph_path))
+segs = g["segments"]
+by_id = {s["id"]: s for s in segs}
+
+def repo_slug(repo_key=None):
+    repos = json.load(open(manifest_path))["repos"]
+    path = os.path.expanduser(repos[repo_key or g["repo"]]["path"])
+    try:
+        url = subprocess.check_output(["git", "-C", path, "remote", "get-url", "origin"],
+                                      text=True, stderr=subprocess.DEVNULL).strip()
+        return url.split("github.com")[-1].lstrip(":/").removesuffix(".git")
+    except Exception:
+        return None
+
+def pr_state(slug, pr):
+    if not slug or not pr:
+        return None
+    try:
+        out = subprocess.check_output(
+            ["gh", "pr", "view", str(pr), "--repo", slug, "--json", "state,mergedAt"],
+            text=True, stderr=subprocess.DEVNULL)
+        d = json.loads(out)
+        if d.get("mergedAt"):
+            return "merged"
+        return {"OPEN": "pr-open", "CLOSED": "blocked", "MERGED": "merged"}.get(d.get("state"), "pr-open")
+    except Exception:
+        return None
+
+if mode == "reconcile":
+    for s in segs:
+        if s.get("pr"):
+            st = pr_state(repo_slug(s.get("repo")), s["pr"])
+            if st:
+                s["status"] = st
+    for s in segs:
+        if s["status"] in ("pending", "ready"):
+            deps_done = all(by_id.get(d, {}).get("status") == "merged" for d in s.get("deps", []))
+            s["status"] = "ready" if deps_done and s.get("brief") else "pending"
+    json.dump(g, open(graph_path, "w"), indent=2)
+
+order = {"blocked": 0, "pr-open": 1, "building": 2, "ready": 3, "pending": 4, "merged": 5}
+if mode in ("reconcile", "status"):
+    in_flight = sum(1 for s in segs if s["status"] in ("building", "pr-open"))
+    print(f"epic: {g['epic']}  repo: {g['repo']}  max_parallel: {g['max_parallel']}  in-flight: {in_flight}")
+    if not segs:
+        print("  (no segments yet; awaiting the decomposition gate)")
+    for s in sorted(segs, key=lambda s: (order.get(s['status'], 9), s['id'])):
+        deps = ",".join(s.get("deps", [])) or "-"
+        pr = f"#{s['pr']}" if s.get("pr") else "-"
+        print(f"  [{s['status']:<8}] {s['id']:<28} deps:{deps:<22} pr:{pr}")
+
+if mode == "ready":
+    in_flight = sum(1 for s in segs if s["status"] in ("building", "pr-open"))
+    budget = max(0, g["max_parallel"] - in_flight)
+    ready = [s["id"] for s in segs if s["status"] == "ready"][:budget]
+    print(" ".join(ready))
+    if not ready:
+        print("# none dispatchable (budget full or nothing ready)", file=sys.stderr)
+PY
+  ;;
+*)
+  die "unknown command: $CMD" ;;
+esac

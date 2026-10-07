@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+#
+# review-receipt — record that a review pass cleared the current commit.
+#
+# The pre-push gate needs a codex (second-model) review of the exact commit being
+# pushed, and a claude (first-model) review of that commit or of an earlier state
+# of the same work: an ancestor (review once, fix, have the second model review
+# the fixes) or the same diff rebased. Every verdict is appended to
+# adw-review-history.json in the git dir, which a new commit does not clear; the
+# per-commit receipt does reset.
+#
+#   review-receipt claude pass "adversarial + callsite-coverage, no findings"
+#   review-receipt codex  fail "missing tenant scope in Foo#bar"
+#   review-receipt --show
+#
+set -euo pipefail
+case "${1:-}" in -h|--help|"") awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;; esac
+GITDIR=$(git rev-parse --absolute-git-dir) || exit 2
+RECEIPT="$GITDIR/adw-receipt.json"
+
+if [ "${1:-}" = "--show" ]; then
+  [ -f "$RECEIPT" ] && cat "$RECEIPT" || echo "no receipt at $RECEIPT"; exit 0
+fi
+
+WHO="${1:?usage: review-receipt <claude|codex> <pass|fail> [notes]}"
+VERDICT="${2:?usage: review-receipt <claude|codex> <pass|fail> [notes]}"
+NOTES="${3:-}"
+case "$WHO" in claude|codex) ;; *) echo "reviewer must be claude or codex" >&2; exit 2 ;; esac
+case "$VERDICT" in pass|fail) ;; *) echo "verdict must be pass or fail" >&2; exit 2 ;; esac
+
+HEAD_SHA=$(git rev-parse HEAD)
+BASE=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || { git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main; } || echo origin/master)
+MB=$(git merge-base "$BASE" HEAD 2>/dev/null || true)
+PATCH_ID=""; [ -n "$MB" ] && PATCH_ID=$(git diff --raw --no-abbrev --no-renames "$MB" HEAD | git hash-object --stdin)
+
+python3 - "$RECEIPT" "$HEAD_SHA" "$WHO" "$VERDICT" "$NOTES" "$GITDIR/adw-review-history.json" "$PATCH_ID" <<'PY'
+import json, os, sys, time
+path, sha, who, verdict, notes, hist_path, patch_id = sys.argv[1:8]
+hist = []
+if os.path.exists(hist_path):
+    try: hist = json.load(open(hist_path))
+    except Exception: hist = []
+hist.append({"who": who, "verdict": verdict, "sha": sha, "patch_id": patch_id,
+             "at": int(time.time()), "notes": notes})
+json.dump(hist[-200:], open(hist_path, "w"), indent=2)
+d = {}
+if os.path.exists(path):
+    try: d = json.load(open(path))
+    except Exception: d = {}
+if d.get("sha") != sha:
+    d = {"sha": sha, "ci": {"status": "unknown"}, "reviews": {}}
+d.setdefault("reviews", {})[who] = {"verdict": verdict, "at": int(time.time()), "notes": notes}
+json.dump(d, open(path, "w"), indent=2)
+print(f"recorded {who}={verdict} for {sha[:10]}")
+PY
