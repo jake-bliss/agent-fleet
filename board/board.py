@@ -6,20 +6,22 @@ Usage: adw-board [--days N] [--all] [--full] [--json] [--no-herdr]
        adw-board digest | show <decision id | pane | epic> | watch
 
 Env: ADW_HOME, ADW_LAUNCH_ARGS (args for agents launched from the board),
-     ADW_BOARD_TS_HOST + ADW_BOARD_TS_USER (optional tailscale serve access), ADW_MATE_DIGEST_AT
+     ADW_BOARD_TS_HOST + ADW_BOARD_TS_USER (optional tailscale serve access), ADW_MATE_DIGEST_AT,
+     ADW_LEAD_REFRESH_AT (context tokens past which an idle refreshable lead is flagged, default 150000)
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import importlib.util
 import secrets
-import shlex
 import shutil
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -50,6 +52,56 @@ def save_link(session, epic):
     tmp = LINKS.with_suffix(".tmp")
     tmp.write_text(json.dumps({"sessions": links}, indent=2))
     tmp.replace(LINKS)
+
+
+SNOOZES = ADW_HOME / "board-snoozes.json"
+SNOOZE_KEY = re.compile(r"(d:d-[0-9a-f]{6}|p:[A-Za-z0-9:_-]{1,64})")
+
+
+SNOOZE_LOCK = threading.Lock()
+
+
+def load_snoozes():
+    try:
+        raw = json.loads(SNOOZES.read_text())
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    return {k: v for k, v in raw.items() if isinstance(v, (int, float)) and v > now}
+
+
+def set_snooze(key, until):
+    if not SNOOZE_KEY.fullmatch(key):
+        raise ValueError("bad snooze key")
+    with SNOOZE_LOCK:
+        sn = load_snoozes()
+        if until:
+            sn[key] = int(until)
+        else:
+            sn.pop(key, None)
+        tmp = SNOOZES.with_name(f".{SNOOZES.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        tmp.write_text(json.dumps(sn, indent=2))
+        tmp.replace(SNOOZES)
+
+
+def snooze_until(choice):
+    now = time.time()
+    if choice == "tomorrow":
+        t = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0)
+        nxt = t.timestamp() if t.timestamp() > now + 3600 else t.timestamp() + 86400
+        return nxt
+    mins = {"1h": 60, "4h": 240}.get(choice)
+    if not mins:
+        raise ValueError("snooze for 1h, 4h or tomorrow")
+    return now + mins * 60
+
+
+def snoozed(b, key):
+    return key in (b.get("snoozes") or {})
+
+
+def dialog_key(a):
+    return "p:" + (a.get("session") or a["pane"])
 
 _spec = importlib.util.spec_from_file_location("asks", Path(__file__).resolve().parent / "asks.py")
 asks = importlib.util.module_from_spec(_spec)
@@ -222,6 +274,27 @@ def last_message_at(path):
     return None
 
 
+IN_TAB_WORK = re.compile(r"← \d+ agent|\d+ background|Waiting for \d+ background")
+REFRESH_AT = int(os.environ.get("ADW_LEAD_REFRESH_AT", "150000"))
+
+
+def context_tokens(sid):
+    for path in (Path.home() / ".claude/projects").glob(f"*/{sid}.jsonl"):
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 524288))
+            tail = f.read().decode("utf-8", "replace").splitlines()
+        for line in reversed(tail):
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            u = e.get("type") == "assistant" and (e.get("message") or {}).get("usage")
+            if u:
+                return u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+    return None
+
+
 def last_active(agent, sid):
     if not sid:
         return None
@@ -272,6 +345,7 @@ def load_agents(epics):
     for a in agents:
         e = next((e for e in epics if e["epic"] == a["epic"]), None)
         a["lead_pane"] = e and e["lead_pane"]
+        a["context"] = context_tokens(a["session"]) if a["role"] == "lead" and a["kind"] == "claude" else None
     return agents
 
 
@@ -308,7 +382,7 @@ def build(args):
     decisions = [d for d in asks.all_asks()
                  if d["status"] == "open" or (d.get("answer") or {}).get("at", 0) >= since]
     return {"generated": int(time.time()), "epics": epics, "agents": agents, "decisions": decisions,
-            "ask_fresh_hours": ASK_FRESH_HOURS, "no_herdr": args.no_herdr,
+            "ask_fresh_hours": ASK_FRESH_HOURS, "snoozes": load_snoozes(), "no_herdr": args.no_herdr,
             "completed": sorted(completed, key=lambda c: -c["completed_at"]),
             "mate": mate_digest()}
 
@@ -496,6 +570,7 @@ def serve(args):
     def board_json():
         with lock:
             if time.time() - cache["at"] > 5:
+                asks.apply_defaults()
                 asks.retry_deliveries()
                 cache["body"] = json.dumps(build(args)).encode()
                 cache["at"] = time.time()
@@ -583,6 +658,10 @@ def serve(args):
             else:
                 raise ValueError("unknown action")
             return {"ok": True}
+        if route == "/api/snooze":
+            key = body.get("key", "")
+            set_snooze(key, None if body.get("for") == "off" else snooze_until(body.get("for")))
+            return {"ok": True}
         if route == "/api/answer":
             d = asks.record_answer(body["id"], body.get("choice", ""), body.get("note", ""))
             return {"delivered": bool(d.get("delivered")), "delivery_error": d.get("delivery_error")}
@@ -624,16 +703,24 @@ def ago_s(ts):
 def mate_events(b):
     ev = {}
     for d in b.get("decisions", []):
-        if d["status"] == "open":
+        if d["status"] == "open" and not snoozed(b, "d:" + d["id"]):
             ev[f"decision:{d['id']}"] = f"needs-you decision {d['id']} [{d.get('epic') or '-'}] {d['title']}"
     for a in b.get("agents") or []:
         key = a.get("session") or a["pane"]
-        if a["attention"] == "blocked":
+        if a["attention"] == "blocked" and not snoozed(b, dialog_key(a)):
             ev[f"dialog:{key}"] = f"needs-you dialog {a['pane']} {a['title']}{role_s(a)}"
         w = a.get("watch")
         if w and w["state"] in ("stopped-silent", "overdue", "failed", "done"):
             kind = "ready" if w["state"] == "done" else "trouble"
             ev[f"watch:{key}:{w['state']}:{int(w['at'])}"] = f"{kind} {w['state']} {a['pane']} {a['title']}{role_s(a)} :: {w['text']}"
+    for a in b.get("agents") or []:
+        w = a.get("watch")
+        if (a.get("role") == "lead" and (a.get("context") or 0) >= REFRESH_AT and a["status"] in ("idle", "done")
+                and w and w["state"] == "waiting" and "[refreshable]" in w["text"]
+                and (a.get("last_active") or 0) <= w["at"] + 30 and a["attention"] != "background"
+                and not IN_TAB_WORK.search(a.get("screen") or "")):
+            ev[f"refresh:{a['session']}"] = (f"refresh {a['pane']} session {a['session']} [lead of {a['epic']}] at {a['context'] // 1000}k context, "
+                                             f"waiting with nothing in flight in-tab :: {w['text']}")
     for e in b["epics"]:
         live_segs = e["counts"].get("building", 0) + e["counts"].get("pr-open", 0)
         if e.get("lead") and not e.get("lead_pane") and live_segs and b.get("agents") is not None:
@@ -649,9 +736,10 @@ def mate_events(b):
 def digest(b):
     out = []
     needs = [f"- decision `{d['id']}` [{d.get('epic') or '-'}] {d['title']} ({ago_s(d['created'])})"
-             for d in b.get("decisions", []) if d["status"] == "open"]
+             for d in b.get("decisions", []) if d["status"] == "open" and not snoozed(b, "d:" + d["id"])]
     needs += [f"- dialog `{a['pane']}` {a['title']} (active {ago_s(a.get('last_active'))})"
-              for a in b.get("agents") or [] if a["attention"] == "blocked"]
+              for a in b.get("agents") or [] if a["attention"] == "blocked" and not snoozed(b, dialog_key(a))]
+    n_snoozed = len(b.get("snoozes") or {})
     trouble = [f"- `{a['pane']}` {a['watch']['state']}: {a['title']}{role_s(a)} :: {a['watch']['text']} ({ago_s(a['watch']['at'])})"
                for a in b.get("agents") or [] if a.get("watch") and a["watch"]["state"] in ("failed", "stopped-silent", "overdue")]
     trouble += [f"- {line.removeprefix('trouble ')}" for k, line in mate_events(b).items() if k.startswith("leaderless:")]
@@ -668,6 +756,8 @@ def digest(b):
     for title, items in (("Needs you", needs), ("Trouble", trouble), ("Ready", ready), ("Under way", under)):
         out.append(f"## {title} ({len(items)})")
         out.extend(items or ["- nothing"])
+        if title == "Needs you" and n_snoozed:
+            out.append(f"- ({n_snoozed} snoozed on the board)")
         out.append("")
     return "\n".join(out).rstrip() + "\n"
 
@@ -714,6 +804,7 @@ def watch(args):
     first = not st
     while True:
         try:
+            asks.apply_defaults()
             b = build(args)
             asks.retry_deliveries()
         except Exception as e:  # keep the stream alive across transient herdr/file errors

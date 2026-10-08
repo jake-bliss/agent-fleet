@@ -22,6 +22,7 @@ A `pre-push` hook enforces this. If any part is missing, the push is refused and
 | status | meaning | passes the gate |
 |---|---|---|
 | `green` | every job CI would run for this diff passed | yes |
+| `fast-green` | a fast-tier repo's non-slow jobs passed (see below) | only when the repo's `gate_tier` is `fast` |
 | `red` | at least one job failed | no |
 | `partial` | `--quick` skipped the slow jobs | no |
 | `subset` | `--only` ran one job | no |
@@ -37,6 +38,26 @@ A `pre-push` hook enforces this. If any part is missing, the push is refused and
 **Config.** `ci-preflight` reads `$ADW_HOME/ci-parity.json` (see `config/ci-parity.example.json`). Each repo lists its jobs in the order CI runs them, with these keys: `job`, `name`, `cmd`, `dir`, `when` (path prefixes, mirroring the workflow's paths filter), `slow`, `destructive` (needs `--include-destructive`), `db`, `env`, `requires`. A job whose paths are untouched is skipped exactly as CI skips it. Run `ci-preflight --audit` after a workflow changes: it flags any listed workflow file newer than the config.
 
 **Test databases.** DB-backed jobs would deadlock each other if every worktree shared one test database. With `db_isolation` configured and honoured by the repo's `database.yml`, each worktree gets a private database name and no lock is taken. Without it, DB-backed jobs take a per-repo lock and queue. Two `ci-preflight` runs in the same worktree still share a database: do not start a second one while one is running, and do not run the suite directly beside a preflight.
+
+## Fast tier: draft PRs carry the full suite
+
+For a large repo whose remote CI already runs the full suite on every push, running that suite locally first mostly duplicates it. Set `"gate_tier": "fast"` on the repo in `ci-parity.json`:
+
+- A bare `ci-preflight` runs only the jobs not marked `slow` (lint, security scans, typecheck), always locally, and records `fast-green`.
+- The hook accepts `fast-green` only for a repo whose config says `gate_tier: fast`. Anywhere else it is refused like `partial`.
+- `ci-preflight --full` runs every job, slow ones included, on the repo's `default_host` if it has one and locally otherwise. Use it when you want the whole suite before pushing: a risky migration, a change remote CI is slow to report on, or an investigation.
+
+The slow jobs still run before anyone reviews the PR; they just run remotely, against a draft:
+
+1. Push and open the PR as a draft (`gh pr create --draft`). Review bots that skip drafts stay quiet.
+2. Start one backgrounded `gh pr checks <pr> --watch` and wait for it to finish. Do not poll on top of it.
+3. If a red is infrastructure-only (runner lost, network timeout, a service container that never started), rerun the failed jobs once (`gh run rerun <run-id> --failed`). A second red, or any red in the code, is a real failure: fix it locally, re-run `ci-preflight`, push.
+4. Run `gh pr ready <pr>` only when CI is green on the current head. This is what starts the review bot.
+5. If the review bot's findings need a non-trivial fix, put the PR back to draft (`gh pr ready <pr> --undo`) while you fix and re-run CI, then mark it ready again on green. Trivial fixes can go straight onto the ready PR.
+
+Why: running the full suite locally before every push meant the same suite ran twice, once on your machine and once on remote CI, and the rate of reds on remote CI did not drop, so the local copy of the suite was paying for nothing. The fast tier keeps the cheap, deterministic checks local, where they catch most mistakes in seconds, and lets remote CI be the single place the full suite runs. Keeping the PR a draft until that suite is green preserves the original rule: the review bot never spends a round discovering a red build.
+
+Repos without `gate_tier`, or with `"gate_tier": "full"`, keep the full local gate described above.
 
 ## The optional remote CI box
 

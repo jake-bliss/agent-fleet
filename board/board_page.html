@@ -239,6 +239,9 @@ function confirmRow(e, inFlight, tabs) {
     <span class="status" id="st-c-${esc(e.epic)}"></span></div></div></td></tr>`;
 }
 
+const snoozeBtns = key => `<span class="dim" style="margin-left:auto">snooze</span>${["1h", "4h", "tomorrow"].map(f => `<button class="ghost" data-snooze="${esc(key)}" data-for="${f}">${f}</button>`).join("")}`;
+const untilS = t => new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+
 function decisionCard(d) {
   const ans = d.answer;
   const opts = (d.options || []).map(o => `<button class="opt ${picks[d.id] === o.key ? "sel" : ""}" data-pick="${esc(d.id)}" data-key="${esc(o.key)}" ${ans ? "disabled" : ""}>
@@ -252,10 +255,10 @@ function decisionCard(d) {
   } else {
     foot = `<textarea data-draft="d:${esc(d.id)}" placeholder="Note to the agent (optional with an option; enough on its own)">${esc(drafts["d:" + d.id] || "")}</textarea>
       <div class="actions"><button class="go" data-answer="${esc(d.id)}">Answer</button>
-      ${d.pane ? `<button class="ghost" data-focus="${esc(d.pane)}">Open tab ${esc(d.pane)}</button>` : ""}<span class="status" id="st-${esc(d.id)}"></span></div>`;
+      ${d.pane ? `<button class="ghost" data-focus="${esc(d.pane)}">Open tab ${esc(d.pane)}</button>` : ""}<span class="status" id="st-${esc(d.id)}"></span>${snoozeBtns("d:" + d.id)}</div>`;
   }
   return `<div class="decision ${ans ? "answered" : ""}"><div class="row"><span class="tag amber">decision</span><span class="mono dim">${esc(d.id)}</span>
-    <span class="epic">${esc(d.title)}</span>${d.epic ? `<span class="tag">${esc(d.epic)}</span>` : ""}<span class="dim">${ago(d.created)} ago</span></div>
+    <span class="epic">${esc(d.title)}</span>${d.epic ? `<span class="tag">${esc(d.epic)}</span>` : ""}<span class="dim">${ago(d.created)} ago</span>${d.default_at ? `<span class="amber">goes with (${esc(d.recommend)}) in ${Math.max(0, Math.round((d.default_at - Date.now() / 1000) / 60))}m unless you answer</span>` : ""}</div>
     <div class="body">${mdBlock(d.body)}</div>${opts ? `<div class="opts">${opts}</div>` : ""}${foot}</div>`;
 }
 
@@ -264,7 +267,10 @@ function render(b) {
   const agents = b.agents || [];
   let needs = [], n = 0;
   const decs = b.decisions || [];
-  for (const d of decs.filter(d => d.status === "open")) { n++; needs.push(decisionCard(d)); }
+  const snz = b.snoozes || {}, sleeping = [];
+  for (const d of decs.filter(d => d.status === "open")) {
+    if (snz["d:" + d.id]) sleeping.push(["d:" + d.id, decisionCard(d)]); else { n++; needs.push(decisionCard(d)); }
+  }
   const TAG = { blocked: ["red", "dialog"], asks: ["dim", "may ask"], unsent: ["amber", "unsent draft"] };
   const freshS = (b.ask_fresh_hours || 2) * 3600;
   const fresh = a => a.last_active && Date.now()/1000 - a.last_active < freshS;
@@ -275,7 +281,7 @@ function render(b) {
   const tabCard = a => {
     const k = "r:" + a.pane;
     const reply = a.attention === "blocked"
-      ? `<div class="actions"><span class="dim">It's showing a dialog; answer it in the tab.</span><button class="ghost" data-view="${esc(a.pane)}">View</button></div>`
+      ? `<div class="actions"><span class="dim">It's showing a dialog; answer it in the tab.</span><button class="ghost" data-view="${esc(a.pane)}">View</button>${snoozeBtns("p:" + (a.session || a.pane))}</div>`
       : `<textarea data-draft="${esc(k)}" placeholder="Reply to this agent">${esc(drafts[k] || "")}</textarea>
          <div class="actions"><button class="go" data-reply="${esc(a.pane)}">Send</button><button class="ghost" data-view="${esc(a.pane)}">View</button><span class="status" id="st-${esc(a.pane)}"></span></div>`;
     const [c, label] = TAG[a.attention] || ["dim", a.attention];
@@ -284,9 +290,14 @@ function render(b) {
       ${a.summary && a.attention !== "blocked" ? `<div style="margin-top:4px">${md(a.summary)}</div>` : ""}
       ${a.screen ? `<details ${a.attention === "blocked" ? "open" : ""}><summary>last screen</summary><div class="screen">${esc(a.screen)}</div></details>` : ""}${reply}</div>`;
   };
-  for (const a of agents.filter(urgent)) { n++; needs.push(tabCard(a)); }
+  for (const a of agents.filter(urgent)) {
+    const k = "p:" + (a.session || a.pane);
+    if (snz[k]) sleeping.push([k, tabCard(a)]); else { n++; needs.push(tabCard(a)); }
+  }
   const answered = decs.filter(d => d.status === "answered");
   const html = `<h2>Needs you <span class="n">${n}</span> <span class="dim" style="text-transform:none;letter-spacing:0">· adw-ask decisions and open dialogs only</span></h2>` + (needs.join("") || `<div class="green">nothing</div>`)
+    + (sleeping.length ? `<details><summary>${sleeping.length} snoozed</summary>${sleeping.map(([k, h]) =>
+        `<div class="actions"><span class="amber">snoozed until ${untilS(snz[k])}</span><button class="ghost" data-snooze="${esc(k)}" data-for="off">Unsnooze</button></div>${h}`).join("")}</details>` : "")
     + (bg.length ? `<div class="dim" style="font-size:12px;margin-top:8px">Waiting on their own background agents: ${bg.map(a => esc(a.pane)).join(", ")}.</div>` : "")
     + (answered.length ? `<details><summary>${answered.length} answered in the last 24h</summary>${answered.map(decisionCard).join("")}</details>` : "");
   const W = { overdue: ["amber", "overdue"], "stopped-silent": ["red", "stopped silent"], failed: ["red", "failed"], waiting: ["dim", "waiting"], done: ["green", "reported done"] };
@@ -420,6 +431,12 @@ document.addEventListener("click", async e => {
     return;
   }
   if (ds.pick) { picks[ds.pick] = picks[ds.pick] === ds.key ? undefined : ds.key; last && (document.getElementById("needs").dataset.html = "", render(last)); return; }
+  if (ds.snooze) {
+    t.disabled = true;
+    try { await post("/api/snooze", { key: ds.snooze, for: ds.for }); tick(); }
+    catch (err) { t.disabled = false; alert(err.message); }
+    return;
+  }
   const st = id => document.getElementById("st-" + id);
   try {
     if (ds.answer) {

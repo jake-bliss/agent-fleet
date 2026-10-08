@@ -4,6 +4,7 @@
 Usage:
   adw-ask new --title T [--epic E] [--body-file F | --body TEXT | --body -]
               [--option KEY=LABEL]... [--recommend KEY]        prints the decision id
+              [--default-after 4h]   reversible decisions only: apply --recommend if unanswered by then
   adw-ask list [--all] [--json]
   adw-ask show <id>
   adw-ask wait <id> [--timeout SECONDS]                       blocks until answered; prints the answer JSON
@@ -11,6 +12,8 @@ Usage:
   adw-ask withdraw <id>
 """
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -41,10 +44,21 @@ def load(i):
     return json.loads(p.read_text())
 
 
+@contextlib.contextmanager
+def locked():
+    ASKS.mkdir(parents=True, exist_ok=True)
+    with open(ASKS / ".lock", "w") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
+
+
 def save(d):
     ASKS.mkdir(parents=True, exist_ok=True)
     p = path(d["id"])
-    tmp = p.with_suffix(".tmp")
+    tmp = p.with_name(f".{p.name}.{os.getpid()}.{secrets.token_hex(3)}.tmp")
     tmp.write_text(json.dumps(d, indent=2))
     tmp.replace(p)
 
@@ -85,7 +99,8 @@ def answer_message(d):
     a = d["answer"]
     label = next((o["label"] for o in d["options"] if o["key"] == a["choice"]), None)
     choice = f"({a['choice']}) {label}" if label else a["choice"]
-    msg = f"[adw-ask {d['id']} answered] {d['title']} -> the human chose: {choice}"
+    who = "No answer in time; the recommended default was applied" if a.get("by") == "default" else "the human chose"
+    msg = f"[adw-ask {d['id']} answered] {d['title']} -> {who}: {choice}"
     if a.get("note"):
         msg += f". Note from the human: {a['note']}"
     return msg + f". Full record: adw-ask show {d['id']}"
@@ -113,21 +128,37 @@ def seen_by_agent(d):
     return False
 
 
+DELIVERY_FIELDS = ("delivered", "delivery_error", "undeliverable", "attempts", "last_attempt")
+
+
+def merge_delivery(d):
+    with locked():
+        cur = load(d["id"])
+        if ((cur.get("session"), cur.get("pane")) != (d.get("session"), d.get("pane")) or cur.get("delivered")
+                or (cur.get("last_attempt") or 0) > (d.get("last_attempt") or 0)):
+            return cur
+        for k in DELIVERY_FIELDS:
+            if k in d:
+                cur[k] = d[k]
+            else:
+                cur.pop(k, None)
+        save(cur)
+        return cur
+
+
 def deliver(d):
     if d["status"] != "answered" or d.get("delivered") or d.get("undeliverable") or not d.get("pane"):
         return d
     if d.get("attempts") and seen_by_agent(d):
         d["delivered"] = now()
         d.pop("delivery_error", None)
-        save(d)
-        return d
+        return merge_delivery(d)
     if d.get("attempts", 0) and now() - d.get("last_attempt", 0) < RESEND_AFTER:
         return d
     if d.get("attempts", 0) >= MAX_ATTEMPTS:
         d["undeliverable"] = True
         d["delivery_error"] = f"sent {MAX_ATTEMPTS} times but never seen in the agent's tab; answer kept in the record"
-        save(d)
-        return d
+        return merge_delivery(d)
     info = agent_info(d["pane"])
     if info is None or (d.get("session") and info["session"] != d["session"]):
         d["undeliverable"] = True
@@ -136,9 +167,16 @@ def deliver(d):
         # Text typed now would land in the agent's approval/question dialog.
         d["delivery_error"] = "agent is in a dialog; will retry"
     else:
+        with locked():
+            cur = load(d["id"])
+            if (cur.get("delivered") or (cur.get("last_attempt") or 0) > (d.get("last_attempt") or 0)
+                    or (cur.get("session"), cur.get("pane")) != (d.get("session"), d.get("pane"))):
+                return cur
+            cur["attempts"] = cur.get("attempts", 0) + 1
+            cur["last_attempt"] = now()
+            save(cur)
+            d = cur
         _, err = herdr("agent", "prompt", d["pane"], answer_message(d))
-        d["attempts"] = d.get("attempts", 0) + 1
-        d["last_attempt"] = now()
         if err:
             d["delivery_error"] = f"herdr prompt failed: {err}; will retry"
         else:
@@ -150,8 +188,7 @@ def deliver(d):
                     break
             else:
                 d["delivery_error"] = "sent; waiting to see it in the agent's tab"
-    save(d)
-    return d
+    return merge_delivery(d)
 
 
 def retry_deliveries():
@@ -160,16 +197,28 @@ def retry_deliveries():
             deliver(d)
 
 
-def record_answer(i, choice, note=""):
-    d = load(i)
-    if d["status"] != "open":
-        raise ValueError(f"{i} is {d['status']}")
+def apply_defaults():
+    for d in all_asks():
+        if d["status"] == "open" and d.get("default_at") and d["default_at"] <= now() and d.get("recommend"):
+            try:
+                record_answer(d["id"], d["recommend"], "", by="default")
+            except ValueError:
+                pass
+
+
+def record_answer(i, choice, note="", by="human"):
     choice = (choice or "").strip()
     if not choice and not note.strip():
         raise ValueError("pick an option or write a note")
-    d["status"] = "answered"
-    d["answer"] = {"choice": choice or "note", "note": note.strip(), "at": now()}
-    save(d)
+    with locked():
+        d = load(i)
+        if d["status"] != "open":
+            raise ValueError(f"{i} is {d['status']}")
+        if by == "default" and not (d.get("default_at") and d["default_at"] <= now()):
+            raise ValueError(f"{i} default not due")
+        d["status"] = "answered"
+        d["answer"] = {"choice": choice or "note", "note": note.strip(), "at": now(), "by": by}
+        save(d)
     return deliver(d)
 
 
@@ -188,12 +237,21 @@ def cmd_new(a):
         options.append({"key": k.strip(), "label": label.strip()})
     if a.recommend and a.recommend not in {o["key"] for o in options}:
         raise SystemExit(f"--recommend {a.recommend!r} is not an option key")
+    default_at = None
+    if a.default_after:
+        m = re.fullmatch(r"(\d+)([mh])", a.default_after)
+        if not m or not a.recommend:
+            raise SystemExit("--default-after wants e.g. 90m or 4h, and needs --recommend")
+        secs = int(m.group(1)) * (60 if m.group(2) == "m" else 3600)
+        if secs < 1800:
+            raise SystemExit("--default-after must allow at least 30m")
+        default_at = now() + secs
     pane = os.environ.get("HERDR_PANE_ID")
     info = agent_info(pane) if pane else None
     d = {"id": "d-" + secrets.token_hex(3), "created": now(), "status": "open",
          "title": a.title, "epic": a.epic, "body": body, "options": options,
          "recommend": a.recommend, "pane": pane, "session": info and info["session"],
-         "cwd": os.getcwd()}
+         "cwd": os.getcwd(), "default_at": default_at}
     save(d)
     print(d["id"])
     if not pane:
@@ -251,6 +309,7 @@ def main():
     n.add_argument("--body-file")
     n.add_argument("--option", action="append")
     n.add_argument("--recommend")
+    n.add_argument("--default-after")
     ls = sp.add_parser("list")
     ls.add_argument("--all", action="store_true")
     ls.add_argument("--json", action="store_true")

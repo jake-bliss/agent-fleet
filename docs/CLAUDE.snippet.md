@@ -21,6 +21,9 @@ adw-ask new --title "<one line>" --epic <slug> --body-file /tmp/<id>.md \
   numbers), each option's consequence, your recommendation and why. Markdown.
 - After filing, mention the id in one line, then continue other work or end the turn. Never poll.
 - Withdraw a question that resolves itself: `adw-ask withdraw <id>`.
+- Reversible, with a clear recommendation: add `--default-after 4h` (needs `--recommend`, minimum
+  30m) — unanswered by then, the recommendation is applied and reaches you as a normal answer.
+  **Never** for product/scope calls, merges, anything irreversible, money, auth or customer data.
 - Only works inside a herdr pane (`HERDR_PANE_ID` set); elsewhere ask in chat.
 
 ## Declare long-running state with `adw-status`
@@ -50,6 +53,8 @@ what enters context, not for output length.
 - **Never re-read a file already read this session.** Edits fail loudly on stale content, so
   re-reading "to verify" buys nothing.
 - **Filter before ingesting.** Narrow a search pattern rather than truncating its results.
+- **Logs to a file.** Long command output goes to a log; read back the exit code, failures and
+  summary — never `| tail` alone, which hides the exit status.
 - **Delegate wide reads** — subagent context is isolated; only the conclusion returns. This is the
   largest single lever.
 - **Say so when a `/clear` is due.** Context carries across unrelated tasks until I clear it; I
@@ -93,7 +98,7 @@ Default to delegating. The main thread is the orchestrator, not the worker.
 | Role | Model | Use for |
 |---|---|---|
 | orchestrator | the strongest model | planning, briefs, adjudication, git, talking to me |
-| `Explore` | any | fan-out search; returns the conclusion, not file dumps |
+| `Explore` | the small model | fan-out search; returns the conclusion, not file dumps |
 | `worker` | a cheaper model | scoped implementation inside an assigned worktree |
 | `reviewer` | the strongest model | adversarial defect hunt on a diff (read-only) |
 | second model (Codex) | a different vendor | reviews, plan critiques, big mechanical refactors |
@@ -103,8 +108,12 @@ Default to delegating. The main thread is the orchestrator, not the worker.
 independent review is wanted. **Don't** delegate a single-fact lookup in a known file, anything one
 edit finishes, or work a skill already owns.
 
-**Model routing:** a cheap model for mechanical extraction, a mid model for building, the strongest
-for architecture, subtle bugs and orchestration. Cheapening the orchestrator is a false economy.
+**Model routing:** the small model for search and mechanical extraction only — never for building or
+reviewing code; a mid model for building; the strongest for architecture, subtle bugs and
+orchestration. Pass `model` explicitly on Explore-style subagents so they don't inherit the
+orchestrator's model. Watch the small model's context: if its pricing steps up past a context size
+(check your provider's current price list), a search that sweeps a huge tree can cost more than a
+mid-model run — narrow the scope instead. Cheapening the orchestrator is a false economy.
 
 ## Nothing reaches remote CI unverified
 
@@ -119,7 +128,11 @@ git push                                           # the pre-push hook verifies 
 ```
 
 The hook blocks the push unless local CI is green on the exact SHA, Codex passed the exact SHA, and
-the Claude review passed this SHA or an ancestor of it. Details: `docs/ci-gate.md` in the adw repo.
+the Claude review passed this SHA or an ancestor of it. `--quick` runs give `partial`, which the hook
+rejects. Repos whose full suite is too slow to run locally can set `gate_tier: "fast"`: the local
+gate runs the fast jobs (`fast-green`), the full suite runs on GitHub against a **draft** PR, and the
+PR is marked ready only when GitHub CI is green on that head; `ci-preflight --full` still runs
+everything. Details: `docs/ci-gate.md` in the adw repo.
 
 `--no-verify` is acceptable only when the diff touches nothing CI checks, when the branch is a pure
 revert of commits already on the default branch, or when CI is green and the reviews are recorded but

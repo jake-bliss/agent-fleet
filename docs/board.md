@@ -8,7 +8,7 @@ comes from it) and is built on herdr, the terminal multiplexer for agents. Both 
 credit for the ideas here.
 
 Everything lives under `$ADW_HOME` (default `~/.claude/adw`): `asks/`, `status/`, `epics/`, `firstmate/`,
-`board-links.json`, `board-serve.log`.
+`board-links.json`, `board-snoozes.json`, `board-serve.log`.
 
 ## Commands
 
@@ -27,6 +27,11 @@ Everything lives under `$ADW_HOME` (default `~/.claude/adw`): `asks/`, `status/`
 **Needs you.** Only real decisions and open dialogs, on purpose: open `adw-ask` decisions, and tabs sitting in an
 approval or question dialog. A stalled tab, a finished segment or a stale epic file does not appear here. If this
 section grows noisy it stops being trusted, so everything else goes elsewhere.
+
+Each item has **snooze** buttons: `1h`, `4h` and `tomorrow` (8am local). A snoozed item leaves Needs you, drops
+out of the first mate's events and digest, and sits in a collapsed "N snoozed" list with an Unsnooze button
+until it comes due. Snoozes are kept server-side in `$ADW_HOME/board-snoozes.json` (so every device sees them)
+and set through `POST /api/snooze`. Snoozing hides an item; it does not answer it.
 
 **Watch.** Tabs that declared a state with `adw-status`, checked against reality:
 
@@ -57,7 +62,8 @@ Click a tab to read its screen and send it keys. The Launch section starts a new
 
 ```bash
 adw-ask new --title "<one line>" --epic <slug> --body-file /tmp/ask.md \
-  --option "a=<choice>" --option "b=<choice>" --recommend a      # prints d-xxxxxx
+  --option "a=<choice>" --option "b=<choice>" --recommend a \
+  [--default-after 4h]                                           # prints d-xxxxxx
 adw-ask list [--all] [--json]
 adw-ask show <id>
 adw-ask wait <id> [--timeout SECONDS]     # blocks until answered
@@ -74,20 +80,54 @@ session transcript. It retries up to three times, ten minutes apart; it waits wh
 (typing then would answer the dialog); and if the agent no longer occupies the pane it marks the answer
 undeliverable and keeps it in the record (`adw-ask show <id>`).
 
+Every change to the queue happens under a file lock (`asks/.lock`), so the board, `adw-ask` and several tabs can
+write at once without losing an answer or delivering one twice.
+
+### Auto-defaults
+
+`--default-after 90m|4h` (needs `--recommend`, at least `30m`) applies the recommendation if you have not
+answered by then. The board shows "goes with (a) in Nm unless you answer" on the card; the board server and
+`adw-board watch` apply due defaults, recorded as answered `by: default`, and the message the tab receives says
+the default was applied rather than chosen. Answering first always wins.
+
+Use it only for reversible decisions with a clear recommendation. Never for:
+
+- product or scope decisions,
+- merges,
+- irreversible actions,
+- money,
+- auth,
+- customer data.
+
+Those wait for you, however long it takes.
+
 ## adw-status: tabs declare their state
 
 ```bash
-adw-status waiting "CI on the acme-api PR" --for 30m     # or --until 2026-01-01T22:00Z
+adw-status waiting "CI on the acme-api PR" --for 30m     # or --until 2026-01-01T22:00Z; add --refreshable for a lead
 adw-status progress "<text>"
 adw-status done "<what finished>"
 adw-status failed "<what broke>"
 adw-status show
-adw-status lead <epic>       # register this tab as the epic's lead
+adw-status lead <epic> [--takeover]      # register this tab as the epic's lead
 ```
 
 Lines are appended to `$ADW_HOME/status/<session>.log` as `<ISO-8601 UTC> <kind>: <text>[ until <ISO>]`. Use it
 in any tab running multi-step work: `waiting` right before ending a turn to wait on something, `done` or
 `failed` when the work ends.
+
+### Leads: registration, takeover, refresh
+
+`adw-status lead <epic>` writes `epics/<epic>/lead.json` atomically. If another session is already the lead and
+herdr still shows it running, the command refuses; pass `--takeover` only when you asked for a new lead. When
+the lead changes, the epic's open decisions, and answered ones not yet logged in the epic's `decisions.md`, are
+re-routed to the new lead's pane, so an answer is never typed into a dead tab.
+
+Leads should stay short-lived: the epic's state lives in its files, not in the lead's context. A lead waiting
+on something long marks it `adw-status waiting "<what>" --refreshable`. When such a lead is idle, has nothing
+running in-tab (no background agents or shells), and its session context has passed `ADW_LEAD_REFRESH_AT` tokens
+(default 150000), `adw-board watch` emits a `refresh:<session>` event. The first mate (or you) can then replace
+it with a fresh lead that takes over with `--takeover` and picks up from the epic files.
 
 ## Chain of command
 

@@ -49,18 +49,24 @@ while read -r _local_ref local_sha _remote_ref remote_sha; do
   [ "$local_sha" = "$remote_sha" ] && continue
 
   [ -f "$RECEIPT" ] || fail "no preflight receipt for ${local_sha:0:10}"
-  read -r r_sha ci < <(python3 - "$RECEIPT" <<'PY'
+  read -r r_sha ci r_repo < <(python3 - "$RECEIPT" <<'PY'
 import json, sys
 try: d = json.load(open(sys.argv[1]))
 except Exception: d = {}
-print(d.get("sha", "-"), d.get("ci", {}).get("status", "none"))
+print(d.get("sha", "-"), d.get("ci", {}).get("status", "none"), d.get("repo") or "-")
 PY
 )
+  if [ "$ci" = fast-green ]; then
+    tier=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['repos'].get(sys.argv[2],{}).get('gate_tier','full'))" \
+      "${CI_PARITY_CONFIG:-${ADW_HOME:-$HOME/.claude/adw}/ci-parity.json}" "$r_repo" 2>/dev/null)
+    [ "$tier" = fast ] && ci=green
+  fi
   [ "$r_sha" = "$local_sha" ] || fail "local CI receipt is for a different commit" \
     "receipt: ${r_sha:0:10}   pushing: ${local_sha:0:10}" "Re-run ci-preflight on this commit."
   [ "$ci" = green ] || fail "local CI is '$ci' for ${local_sha:0:10}" \
     "'partial' = --quick skipped the slow jobs. 'subset' = --only ran one job." \
     "'empty' = every job was skipped, so nothing was verified." \
+    "'fast-green' passes only for a repo whose ci-parity entry sets gate_tier fast." \
     "Only a bare 'ci-preflight' run can clear this."
 
   [ -f "$HIST" ] || echo '[]' > "$HIST"

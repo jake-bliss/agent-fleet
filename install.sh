@@ -24,7 +24,14 @@ done
 note() { printf '  %s\n' "$*"; }
 
 link() {
-  local src="$1" dest="$2"
+  local src="$1" dest="$2" parent
+  parent="$(cd "$(dirname "$dest")" 2>/dev/null && pwd -P)" || parent=""
+  case "$parent/" in
+    "$REPO"/*)
+      note "SKIPPED $dest: its folder resolves into this repo (a symlinked parent); not writing there"
+      return 0
+      ;;
+  esac
   if [ -L "$dest" ]; then
     if [ "$(readlink "$dest")" = "$src" ]; then
       return 0
@@ -40,7 +47,13 @@ link() {
 }
 
 echo "adw: installing from $REPO"
-mkdir -p "$ADW_HOME" "$ADW_HOME/epics" "$BIN_DIR" "$SKILLS_DIR"
+mkdir -p "$ADW_HOME" "$BIN_DIR" "$SKILLS_DIR"
+for target in "$ADW_HOME" "$BIN_DIR" "$SKILLS_DIR"; do
+  case "$(cd "$target" && pwd -P)/" in
+    "$REPO"/*) echo "adw: $target resolves inside this repo ($REPO); refusing to install into it" >&2; exit 1 ;;
+  esac
+done
+mkdir -p "$ADW_HOME/epics"
 
 echo "commands -> $BIN_DIR"
 for f in "$REPO"/bin/*; do
@@ -63,7 +76,14 @@ echo "skills -> $SKILLS_DIR"
 for d in "$REPO"/skills/*/; do
   [ -d "$d" ] || continue
   d="${d%/}"
-  link "$d" "$SKILLS_DIR/$(basename "$d")"
+  dest="$SKILLS_DIR/$(basename "$d")"
+  if [ -d "$dest" ] && [ ! -L "$dest" ]; then
+    for part in SKILL.md references; do
+      [ -e "$d/$part" ] && link "$d/$part" "$dest/$part"
+    done
+  else
+    link "$d" "$dest"
+  fi
 done
 
 echo "engine -> $ADW_HOME"

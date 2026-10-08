@@ -6,6 +6,7 @@
       "base_branch": "main",
       "workflows": [".github/workflows/ci.yml"],
       "default_host": "remote",
+      "gate_tier": "fast",
       "db_isolation": {
         "files": ["config/database.yml"],
         "requires": ["DATABASE_NAME"],

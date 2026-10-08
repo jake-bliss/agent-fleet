@@ -24,7 +24,8 @@ merged PR without being supervised turn by turn — and who want one place to se
 - Python 3.11+ (stdlib only)
 - git, the GitHub CLI (`gh`), herdr, Claude Code
 - Claude Code subagents named `worker` (builds in a given worktree) and `reviewer` (read-only defect
-  hunt); the skills dispatch them by name, so define your own in `~/.claude/agents/`
+  hunt); the skills dispatch them by name, so define your own in `~/.claude/agents/` (an example
+  `worker` is in `agents/worker.md`)
 - Codex CLI — optional, but the cross-model review assumes it
 - Tailscale — optional, to reach the board from your phone and other devices (setup in `docs/board.md`)
 
@@ -54,6 +55,7 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 
 | Path | What |
 |---|---|
+| `skills/*/SKILL.md`, `skills/*/references/` | each skill's operative rules; the rationale behind them sits in `references/` |
 | `skills/adw/` | `/adw` — one segment to a merged PR |
 | `skills/adw-lead/` | `/adw-lead` — the epic conductor |
 | `skills/first-mate/`, `skills/continue/` | the fleet overseer tab, and jumping to one board item |
@@ -62,10 +64,12 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `review/` | the shared review contract and the lenses reviewers apply |
 | `config/` | example configs, copied into `$ADW_HOME` by the installer |
 | `launchd/` | the board's launchd template |
+| `agents/worker.md` | an example worktree-confined builder subagent |
 | `docs/way-of-working.md` | the whole method in two pages — start here |
 | `docs/board.md` | the fleet layer: board, decisions, status, first mate |
 | `docs/ci-gate.md` | local CI parity and the pre-push gate |
 | `docs/worktrees.md` | copy-on-write worktrees |
+| `docs/codex-overnight.md` | handing Codex unattended overnight builds: cutting, the goal prompt, the morning handoff |
 | `docs/CLAUDE.snippet.md` | conventions to paste into your own `CLAUDE.md` |
 
 Every path honours `ADW_HOME` (default `$HOME/.claude/adw`). Real config lives there and is never

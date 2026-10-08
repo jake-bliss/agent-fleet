@@ -10,11 +10,19 @@
 # It writes a receipt (<git-dir>/adw-receipt.json) naming the exact commit it
 # verified. The pre-push hook reads it, so a green run cannot be inherited by a
 # later commit. Status values: green, red, partial (--quick), subset (--only),
-# empty (no job ran), tooling (a required tool was missing: not a code failure).
-# Only green passes the gate.
+# fast-green (fast tier), empty (no job ran), tooling (a required tool was
+# missing: not a code failure). Only green passes the gate, plus fast-green for
+# a repo whose ci-parity entry sets "gate_tier": "fast".
+#
+# Fast tier: a repo with "gate_tier": "fast" runs only its non-slow jobs here,
+# locally, and records fast-green. Its full suite runs on remote CI against a
+# draft PR, which is marked ready only once that is green. --full runs every
+# job instead (on the default_host when one is set).
 #
 # Usage (from inside the worktree):
 #   ci-preflight                      run every job CI would run for this diff
+#                                     (fast-tier repos: the non-slow jobs only)
+#   ci-preflight --full               run every job, even for a fast-tier repo
 #   ci-preflight --quick              skip jobs marked slow; records "partial"
 #   ci-preflight --include-destructive   also run jobs that drop a local database
 #   ci-preflight --only <name>        run one job by name; records "subset"
@@ -29,10 +37,11 @@ set -uo pipefail
 
 ADW_HOME="${ADW_HOME:-$HOME/.claude/adw}"
 CONFIG="${CI_PARITY_CONFIG:-$ADW_HOME/ci-parity.json}"
-QUICK=""; DESTRUCTIVE=""; ONLY=""; AUDIT=""; SHOW=""; NOLOCK=""; HOST=""; EMIT_JSON=""; LOCAL=""
+FULL=""; FAST=""; QUICK=""; DESTRUCTIVE=""; ONLY=""; AUDIT=""; SHOW=""; NOLOCK=""; HOST=""; EMIT_JSON=""; LOCAL=""
 REPO_KEY_OVERRIDE=""; CHANGED_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --full) FULL=1; shift ;;
     --quick) QUICK=1; shift ;;
     --include-destructive) DESTRUCTIVE=1; shift ;;
     --only) ONLY="${2:?--only needs a job name}"; shift 2 ;;
@@ -137,6 +146,11 @@ print("\nA workflow newer than the config may have added or changed a job."
       if stale else "\nConfig is at least as new as every workflow.")
 PY
   exit 0
+fi
+
+if [ -z "$FULL" ] && [ -z "$QUICK" ] && [ -z "$ONLY" ] && [ -z "$EMIT_JSON" ] && [ -z "$HOST" ]; then
+  TIER=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['repos'][sys.argv[2]].get('gate_tier','full'))" "$CONFIG" "$REPO_KEY")
+  if [ "$TIER" = fast ]; then FAST=1; QUICK=1; LOCAL=1; fi
 fi
 
 if [ -z "$HOST" ] && [ -z "$LOCAL" ] && [ -z "$EMIT_JSON" ] && [ -z "$REPO_KEY_OVERRIDE" ]; then
@@ -261,7 +275,8 @@ fi
 
 echo "== repo:$REPO_KEY  branch:$BRANCH  sha:${SHA:0:10}"
 echo "== base:${BASE:-<none>}  changed files:$(printf '%s\n' "$CHANGED" | grep -c . || true)"
-[ -n "$QUICK" ] && echo "== --quick: slow jobs (suites, builds) will be SKIPPED; not a full gate"
+if [ -n "$FAST" ]; then echo "== fast tier: slow jobs run on remote CI against the draft PR (--full runs them here)"
+elif [ -n "$QUICK" ]; then echo "== --quick: slow jobs (suites, builds) will be SKIPPED; not a full gate"; fi
 
 JOBS=$(python3 - "$CONFIG" "$REPO_KEY" <<'PY'
 import json, sys
@@ -441,9 +456,10 @@ fi
 STATUS=green
 [ "$TOOLERR" -gt 0 ] && STATUS=tooling
 [ "$FAILED" -gt 0 ] && STATUS=red
+[ "$RAN" -eq 0 ] && [ "$STATUS" = green ] && STATUS=empty
+[ -n "$FAST" ] && [ "$STATUS" = green ] && STATUS=fast-green
 [ -n "$QUICK" ] && [ "$STATUS" = green ] && STATUS=partial
 [ -n "$ONLY" ]  && [ "$STATUS" = green ] && STATUS=subset
-[ "$RAN" -eq 0 ] && [ "$STATUS" = green ] && STATUS=empty
 
 RECEIPT_OUT="$RECEIPT"; [ -n "$EMIT_JSON" ] && RECEIPT_OUT="-"
 python3 - "$RECEIPT_OUT" "$SHA" "$BRANCH" "$REPO_KEY" "$STATUS" "${RESULTS%,}" <<'PY'
@@ -477,6 +493,7 @@ fi
 printf '\033[32m== local CI %s for %s\033[0m (%s ran)\n' "$STATUS" "${SHA:0:10}" "$RAN"
 case "$STATUS" in
   partial) echo "   --quick left the slow jobs unverified; the pre-push gate will still block." ;;
+  fast-green) echo "   push as a DRAFT PR; mark it ready only when remote CI is green on this head." ;;
   empty)   echo "   no job ran; nothing was verified and the pre-push gate will block. Docs-only change? See docs/ci-gate.md." ;;
   subset)  echo "   --only verified one job; the pre-push gate will still block. Run it bare to clear the gate." ;;
 esac
