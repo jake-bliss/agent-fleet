@@ -26,7 +26,7 @@ merged PR without being supervised turn by turn — and who want one place to se
 - Claude Code subagents named `worker` (builds in a given worktree) and `reviewer` (read-only defect
   hunt); the skills dispatch them by name, so define your own in `~/.claude/agents/`
 - Codex CLI — optional, but the cross-model review assumes it
-- Tailscale — optional, to reach the board from your phone
+- Tailscale — optional, to reach the board from your phone and other devices (setup in `docs/board.md`)
 
 ## Quick start
 

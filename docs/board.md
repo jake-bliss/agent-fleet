@@ -117,23 +117,85 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.adw-board.pl
 Logs go to `$ADW_HOME/board-serve.log`. If herdr uses a non-default socket, add `HERDR_SOCKET_PATH` to the
 plist's environment. To pass the Tailscale variables below, add them there too.
 
-## Phone access with tailscale serve
+## Reach it from your phone (and other devices) with Tailscale
 
-Optional. The board always binds `127.0.0.1`; `tailscale serve` proxies it onto your tailnet:
+Optional. The board always binds `127.0.0.1` and never listens on your LAN. `tailscale serve` proxies it onto
+your tailnet over HTTPS, so only devices signed in to your tailnet can reach it. Do not use Funnel: that puts
+the board on the public internet.
+
+**1. Join your devices to the tailnet.** Install Tailscale on the machine running the board and on your
+phone/tablet/laptop, signed in to the same account. MagicDNS and HTTPS certificates must be enabled for the
+tailnet (admin console → DNS).
+
+**2. Find the two values the board needs:**
+
+```bash
+tailscale status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["Self"]["DNSName"].rstrip("."))'
+tailscale status --json | python3 -c 'import json,sys; s=json.load(sys.stdin); print(s["User"][str(s["Self"]["UserID"])]["LoginName"])'
+```
+
+The first is your machine's tailnet name (e.g. `my-mac.tail1234.ts.net`), the second your Tailscale login.
+
+**3. Start the proxy:**
 
 ```bash
 tailscale serve --bg --https=4518 http://127.0.0.1:4518
 ```
 
-Then set, in the board's environment:
+The first time, Tailscale may print a link and wait until you approve Serve for this machine in the browser.
+Run it in a terminal you can see; piped through `tail` or a script, it looks hung. `--bg` keeps the proxy
+running across reboots. `tailscale serve status` shows it.
 
-- `ADW_BOARD_TS_HOST`: the DNS name `tailscale serve` shows for your machine.
-- `ADW_BOARD_TS_USER`: the one Tailscale login allowed in.
+**4. Tell the board to accept it.** Add both values to the board's environment (the plist's
+`EnvironmentVariables` when running under launchd), then restart it:
 
-Both must be set or remote access stays off; there are no defaults. A request on the Tailscale host is accepted
-only if the `Tailscale-User-Login` header that `tailscale serve` adds equals `ADW_BOARD_TS_USER`. Do not use
-Funnel. In your tailnet ACLs, restrict the device to your own user (and a tag if you use one) so no other
-tailnet member can reach it at all; the header check is a second layer, not the only one.
+```xml
+<key>ADW_BOARD_TS_HOST</key><string>my-mac.tail1234.ts.net</string>
+<key>ADW_BOARD_TS_USER</key><string>you@example.com</string>
+```
+
+```bash
+launchctl kickstart -k gui/$(id -u)/com.example.adw-board
+```
+
+Both must be set or remote access stays off; there are no defaults. A request on the tailnet host is accepted
+only if the `Tailscale-User-Login` header that `tailscale serve` adds equals `ADW_BOARD_TS_USER`, so another
+tailnet member who reaches the port still gets 403.
+
+**5. Open it** on your phone: `https://my-mac.tail1234.ts.net:4518/`. The very first request can time out while
+Tailscale issues the certificate; reload after a few seconds. On iOS, Share → Add to Home Screen gives it an
+app icon.
+
+Testing from the board machine itself: it may not resolve its own MagicDNS name. Pin it instead:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" --resolve my-mac.tail1234.ts.net:4518:$(tailscale ip -4) \
+  https://my-mac.tail1234.ts.net:4518/
+```
+
+**6. Lock it down in your tailnet policy.** The header check is the second layer, not the only one. If anyone
+else is in your tailnet, or you share devices, allow only your own login to reach port 4518 on the board
+machine. In the policy file (admin console → Access controls), something like:
+
+```json
+{
+  "hosts": { "adw-board": "100.x.y.z" },
+  "acls": [
+    { "action": "accept", "src": ["you@example.com"], "dst": ["adw-board:4518"] }
+  ]
+}
+```
+
+`100.x.y.z` is `tailscale ip -4` on the board machine. This only restricts anything once the default
+allow-all rule is gone, so check your other rules still cover what you need before saving.
+
+**Turn it off:** `tailscale serve --https=4518 off` (or `tailscale serve reset` to clear every serve rule),
+and remove the two variables.
+
+**Terminals from other devices.** The board's terminal view (click a pane id) shows a tab's screen and can send
+keys, which covers most of what you need away from the desk. A full herdr session over SSH needs the machine
+to accept SSH; on macOS, Tailscale SSH is not available with the App Store/GUI build of Tailscale, so that
+means enabling Remote Login instead.
 
 ## Launching agents from the board
 
