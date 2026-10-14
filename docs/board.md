@@ -28,6 +28,10 @@ Everything lives under `$ADW_HOME` (default `~/.claude/adw`): `asks/`, `status/`
 approval or question dialog. A stalled tab, a finished segment or a stale epic file does not appear here. If this
 section grows noisy it stops being trusted, so everything else goes elsewhere.
 
+**Pause.** `adw-lead-state pause <epic>` (or the Pause button on an epic) writes `PAUSED.json`: the epic shows as
+paused, `adw-lead-state ready` returns nothing for it, and the first mate leaves it alone until `resume`. Each
+action is appended to `HOLDS.jsonl`. The first mate's own tab gets a button on the board to jump to it.
+
 Each item has **snooze** buttons: `1h`, `4h` and `tomorrow` (8am local). A snoozed item leaves Needs you, drops
 out of the first mate's events and digest, and sits in a collapsed "N snoozed" list with an Unsnooze button
 until it comes due. Snoozes are kept server-side in `$ADW_HOME/board-snoozes.json` (so every device sees them)
@@ -241,6 +245,7 @@ means enabling Remote Login instead.
 
 The Launch section starts `claude` in a new herdr tab with the arguments in `ADW_LAUNCH_ARGS`. The default is
 `--dangerously-skip-permissions`.
+If `$ADW_HOME/spawned-settings.json` exists (copy `config/spawned-settings.example.json`), it is passed as `--settings`.
 
 That default is a deliberate choice: an agent started from a phone has nobody at the keyboard to approve each
 tool call. It also means anyone who can reach the board can start an agent that runs commands without asking.

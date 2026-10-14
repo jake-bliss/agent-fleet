@@ -1,0 +1,11 @@
+{
+  "approver": "human",
+  "our_authors": ["your-github-login"],
+  "marker_prefix": "review-bot",
+  "report_marker": "<!-- review-bot:report -->",
+  "review_prefix": "Review bot:",
+  "repos": {
+    "your-org/service-with-a-review-bot": {"bot": "review-bot-login", "merge": "bot"},
+    "your-org/service-without-one": {"merge": "green"}
+  }
+}

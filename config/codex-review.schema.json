@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reviewer", "verdict", "findings", "not_covered", "report"],
+  "properties": {
+    "reviewer": { "type": "string", "enum": ["codex"] },
+    "verdict": { "type": "string", "enum": ["pass", "fail"] },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "severity", "claim", "scenario", "confidence", "fix"],
+        "properties": {
+          "file": { "type": "string" },
+          "line": { "type": "integer" },
+          "severity": { "type": "string", "enum": ["critical", "important", "suggestion", "nitpick"] },
+          "claim": { "type": "string" },
+          "scenario": { "type": "string" },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "fix": { "type": "string" }
+        }
+      }
+    },
+    "not_covered": { "type": "string" },
+    "report": { "type": "string" }
+  }
+}

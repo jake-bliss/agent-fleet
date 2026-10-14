@@ -16,13 +16,13 @@
 #
 # Fast tier: a repo with "gate_tier": "fast" runs only its non-slow jobs here,
 # locally, and records fast-green. Its full suite runs on remote CI against a
-# draft PR, which is marked ready only once that is green. --full runs every
-# job instead (on the default_host when one is set).
+# draft PR, which is marked ready only once that is green. --full is refused
+# for a fast-tier repo.
 #
 # Usage (from inside the worktree):
 #   ci-preflight                      run every job CI would run for this diff
 #                                     (fast-tier repos: the non-slow jobs only)
-#   ci-preflight --full               run every job, even for a fast-tier repo
+#   ci-preflight --full               run every job (refused for a fast-tier repo)
 #   ci-preflight --quick              skip jobs marked slow; records "partial"
 #   ci-preflight --include-destructive   also run jobs that drop a local database
 #   ci-preflight --only <name>        run one job by name; records "subset"
@@ -127,25 +127,38 @@ PY
 fi
 [ -n "$REPO_KEY" ] || die "no ci-parity entry for $PRIMARY; add one to $CONFIG"
 
+cfg_get() { python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['repos'][sys.argv[2]].get(sys.argv[3],sys.argv[4]))" "$CONFIG" "$REPO_KEY" "$1" "$2"; }
+BASE_BRANCH=$(cfg_get base_branch main)
+workflow_drift() {
+  local cfg_m wf wf_ts
+  cfg_m=$(python3 -c "import os,sys;print(int(os.path.getmtime(sys.argv[1])))" "$CONFIG")
+  while IFS= read -r wf; do
+    [ -n "$wf" ] || continue
+    if ! git cat-file -e "origin/$BASE_BRANCH:$wf" 2>/dev/null; then echo "MISSING $wf"; continue; fi
+    wf_ts=$(git log -1 --format=%ct "origin/$BASE_BRANCH" -- "$wf")
+    if [ "$wf_ts" -gt "$cfg_m" ]; then echo "DRIFT   $wf   ($(git log -1 --format='%h %an %cd' --date=short "origin/$BASE_BRANCH" -- "$wf"))"
+    else echo "ok      $wf   ($(git log -1 --format='%h %an %cd' --date=short "origin/$BASE_BRANCH" -- "$wf"))"; fi
+  done < <(python3 -c "import json,sys;print('\n'.join(json.load(open(sys.argv[1]))['repos'][sys.argv[2]].get('workflows',[])))" "$CONFIG" "$REPO_KEY")
+}
+
 if [ -n "$AUDIT" ]; then
-  python3 - "$CONFIG" "$PRIMARY" "$REPO_KEY" <<'PY'
-import json, os, sys, time
-cfg, primary, key = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
-cfg_m = os.path.getmtime(sys.argv[1])
-print(f"config last edited {time.ctime(cfg_m)}\n")
-stale = False
-for wf in cfg["repos"][key].get("workflows", []):
-    p = os.path.join(os.path.expanduser(primary), wf)
-    if not os.path.exists(p):
-        print(f"  MISSING  {wf}"); stale = True; continue
-    m = os.path.getmtime(p)
-    flag = "DRIFT  " if m > cfg_m else "ok     "
-    if m > cfg_m: stale = True
-    print(f"  {flag}{wf}   (workflow {time.ctime(m)})")
-print("\nA workflow newer than the config may have added or changed a job."
-      if stale else "\nConfig is at least as new as every workflow.")
-PY
+  # Reads origin/<base>, not the primary checkout: that checkout may sit on a stale branch.
+  echo "config last edited $(python3 -c "import os,sys,time;print(time.ctime(os.path.getmtime(sys.argv[1])))" "$CONFIG")"; echo
+  drift=$(workflow_drift); printf '%s\n' "$drift" | sed 's/^/  /'; echo
+  if printf '%s\n' "$drift" | grep -q '^\(DRIFT\|MISSING\)'; then
+    echo "A workflow on origin/$BASE_BRANCH is newer than the config or missing; it may have added or changed a job."
+  else echo "Config is at least as new as every workflow on origin/$BASE_BRANCH."; fi
   exit 0
+fi
+
+if [ -z "$EMIT_JSON" ] && [ -z "$SHOW" ]; then
+  workflow_drift | grep '^DRIFT' | while read -r _ wf rest; do
+    printf '\033[33mci-preflight: %s changed on origin/%s after ci-parity.json was last edited; check parity with --audit\033[0m\n' "$wf" "$BASE_BRANCH" >&2
+  done
+fi
+
+if [ -n "$FULL" ] && [ -z "$REPO_KEY_OVERRIDE" ] && [ -z "$EMIT_JSON" ] && [ "$(cfg_get gate_tier full)" = fast ]; then
+  die "--full is refused for $REPO_KEY: its full suite runs on remote CI against the draft PR. Run ci-preflight (fast tier), push the draft, then wait for remote CI to go green."
 fi
 
 if [ -z "$FULL" ] && [ -z "$QUICK" ] && [ -z "$ONLY" ] && [ -z "$EMIT_JSON" ] && [ -z "$HOST" ]; then
@@ -275,7 +288,7 @@ fi
 
 echo "== repo:$REPO_KEY  branch:$BRANCH  sha:${SHA:0:10}"
 echo "== base:${BASE:-<none>}  changed files:$(printf '%s\n' "$CHANGED" | grep -c . || true)"
-if [ -n "$FAST" ]; then echo "== fast tier: slow jobs run on remote CI against the draft PR (--full runs them here)"
+if [ -n "$FAST" ]; then echo "== fast tier: slow jobs run on remote CI against the draft PR"
 elif [ -n "$QUICK" ]; then echo "== --quick: slow jobs (suites, builds) will be SKIPPED; not a full gate"; fi
 
 JOBS=$(python3 - "$CONFIG" "$REPO_KEY" <<'PY'

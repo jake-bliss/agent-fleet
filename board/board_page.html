@@ -135,6 +135,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 <body>
 <header>
   <h1>ADW Board</h1>
+  <button class="go" id="mate-btn" style="align-self:center;min-height:40px" hidden>First mate ›</button>
   <span class="meta" id="meta">loading…</span>
   <label class="meta"><input type="checkbox" id="full"> all pending items</label>
 </header>
@@ -312,6 +313,8 @@ function render(b) {
       <span class="mono dim" data-view="${esc(a.pane)}">${esc(a.pane)}</span><span>${esc(a.title)}</span>${a.epic ? `<span class="tag">${esc(a.epic)}</span>` : ""}</div>
       <div class="dim" style="margin-top:3px">${esc(a.watch.kind)}: ${md(a.watch.text)} <span style="opacity:.8">· ${ago(a.watch.at)} ago${until(a.watch)}</span></div>
       ${a.watch.state === "stopped-silent" ? `<div class="dim" style="font-size:13px;margin-top:3px">It kept going after this report and then stopped without a new one.</div>` : ""}</div>`; }).join("")}` : "";
+  const mb = document.getElementById("mate-btn");
+  mb.hidden = !b.mate_pane; mb.dataset.pane = b.mate_pane || "";
   const me = document.getElementById("mate");
   const mateHtml = b.mate ? `<h2>First mate <span class="dim" style="text-transform:none;letter-spacing:0">· digest ${ago(b.mate.at)} ago</span></h2>
     <div class="body" style="max-height:none">${mdBlock(b.mate.text)}</div>` : "";
@@ -355,7 +358,8 @@ function render(b) {
     if (key) { const t = el.querySelector(`[data-draft="${CSS.escape(key)}"]`); if (t) { t.focus(); t.setSelectionRange(...pos); } }
   }
 
-  const rows = b.epics.map(e => {
+  const live = b.epics.filter(e => !e.paused), held = b.epics.filter(e => e.paused);
+  const rows = live.map(e => {
     const c = e.counts, fl = (c.building || 0) + (c["pr-open"] || 0), mx = e.max_parallel || 0;
     const tabs = agents.filter(a => a.epic === e.epic).sort((a, b) => (b.role === "lead") - (a.role === "lead")).map(a => `<span class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</span>${a.role === "lead" ? ' <span class="tag">lead</span>' : ""}`).join(" ")
       + (e.lead && !e.lead_pane ? ` <span class="red">lead ${esc(e.lead.pane)} gone</span>` : "");
@@ -366,7 +370,7 @@ function render(b) {
       <td data-l="Merged">${c.merged || 0}</td><td data-l="Ready">${c.ready || 0}</td><td data-l="Pending">${c.pending || 0}</td>
       <td class="c-wide" data-l="Segments">${inflight || '<span class="dim">—</span>'}</td>
       <td class="c-wide" data-l="Tabs">${tabs || '<span class="dim">no tab</span>'}<div>${tabPicker(e.epic, agents)}</div></td><td class="dim" data-l="Touched">${ago(e.mtime)}</td>
-      <td class="c-wide"><button class="ghost" data-confirm="${esc(e.epic)}">${confirming[e.epic] ? "Cancel" : "Mark complete…"}</button></td></tr>
+      <td class="c-wide"><button class="ghost" data-pause="${esc(e.epic)}">Pause…</button> <button class="ghost" data-confirm="${esc(e.epic)}">${confirming[e.epic] ? "Cancel" : "Mark complete…"}</button></td></tr>
       ${confirming[e.epic] ? confirmRow(e, fl, tabs) : ""}`;
   }).join("");
   const files = b.epics.map(e => {
@@ -386,10 +390,15 @@ function render(b) {
         <button class="ghost" data-focus="${esc(pane)}">Open tab</button><span class="status" id="st-${esc(pane)}"></span></div>`
         : `<div class="dim" style="font-size:12px;margin-top:6px">No conductor tab is running for this epic, so these entries may be out of date.</div>`}</div>`;
   }).join("");
-  const epicsHtml = `<h2>Epics <span class="n">${b.epics.length}</span></h2>
+  const nActive = live.filter(e => Date.now() / 1000 - e.mtime < 3 * 86400 && Object.entries(e.counts).some(([k, v]) => k !== "merged" && v)).length;
+  const epicsHtml = `<h2>Epics <span class="n">${live.length}</span> <span class="dim" style="text-transform:none;letter-spacing:0">· ${nActive} active (3d)</span></h2>
     <div style="overflow-x:auto"><table><tr><th>Epic</th><th>In flight</th><th>Merged</th><th>Ready</th><th>Pending</th><th>Segments in flight</th><th>Tab</th><th>Touched</th><th></th></tr>${rows}</table></div>
+    ${held.length ? `<details open><summary>${held.length} on hold</summary><ul>${held.map(e =>
+      `<li><span class="epic">${esc(e.epic)}</span> <span class="dim">${esc(e.repo)} · paused ${ago(e.paused.paused_at)} ago${e.paused.reason ? " — " + esc(e.paused.reason) : ""}</span>
+       <button class="go" data-resume="${esc(e.epic)}">Resume</button><span class="status" id="st-p-${esc(e.epic)}"></span></li>`).join("")}</ul></details>` : ""}
     ${(b.completed || []).length ? `<details><summary>${b.completed.length} completed epics</summary><ul>${b.completed.map(c =>
       `<li><span class="epic">${esc(c.epic)}</span> <span class="dim">${esc(c.repo)} · completed ${ago(c.completed_at)} ago</span>
+       ${c.report ? `<span class="dim"> · ${c.report.active_days}d active${c.report.held_days ? ` (+${c.report.held_days}d held)` : ""} · ${c.report.prs_merged} PRs / ${c.report.segments} segs · cycle ${c.report.cycle_h_median}h · FP r${c.report.fp_rounds_median} · ${c.report.user_decisions} asks${c.report.spend_usd != null ? ` · ~$${Math.round(c.report.spend_usd)} ($${c.report.usd_per_pr}/PR)` : ""}</span>` : ""}
        <button class="ghost" data-reopen="${esc(c.epic)}">Reopen</button></li>`).join("")}</ul></details>` : ""}
     ${files ? `<h2 style="margin-top:18px">From epic files <span class="dim" style="text-transform:none;letter-spacing:0">· graph.json and PENDING.md are only as current as the conductor keeps them</span></h2>${files}` : ""}`;
   const ee = document.getElementById("epics");
@@ -428,6 +437,14 @@ document.addEventListener("click", async e => {
       await post("/api/epic", ds.complete ? { epic, action: "complete", confirm: drafts["c:" + epic] || "" } : { epic, action: "reopen" });
       delete confirming[epic]; delete drafts["c:" + epic]; tick();
     } catch (err) { t.disabled = false; const st = document.getElementById("st-c-" + epic); if (st) st.textContent = err.message; else alert(err.message); }
+    return;
+  }
+  if (ds.pause || ds.resume) {
+    const epic = ds.pause || ds.resume, reason = ds.pause ? prompt(`Pause ${epic}? Its lead stops dispatching and checkpoints. Reason (optional):`, "usage limits") : "";
+    if (ds.pause && reason === null) return;
+    t.disabled = true;
+    try { await post("/api/epic", { epic, action: ds.pause ? "pause" : "resume", reason }); tick(); }
+    catch (err) { t.disabled = false; alert(err.message); }
     return;
   }
   if (ds.pick) { picks[ds.pick] = picks[ds.pick] === ds.key ? undefined : ds.key; last && (document.getElementById("needs").dataset.html = "", render(last)); return; }
@@ -558,6 +575,7 @@ async function vRefresh() {
   } catch (e) { $("v-st").textContent = "refresh failed: " + e.message; }
   vBusy = false;
 }
+document.getElementById("mate-btn").addEventListener("click", e => { if (e.currentTarget.dataset.pane) openViewer(e.currentTarget.dataset.pane); });
 function openViewer(pane, fromNav) {
   if (!fromNav && location.hash !== "#view=" + pane) {
     try { history.pushState({ view: pane }, "", "#view=" + pane); } catch (e) {}

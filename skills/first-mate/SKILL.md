@@ -25,7 +25,7 @@ Their instruction IS the authorization. Do it, then read the tab back to confirm
 - a dialog: `herdr agent read` it first, then `herdr pane send-keys <pane> <keys>` for the option they
   chose (number keys / arrows + enter; "other / type something": select it, then type);
 - a decision they answer here: `adw-ask answer <id> <choice> --note "<their note>"`;
-- a new agent: the board's Launch section, or `herdr tab create` + `herdr agent start`;
+- a new agent: the board's Launch section, or `herdr tab create` + `herdr agent start <name> --kind claude --pane <id> -- <launch args>` (include `--settings $ADW_HOME/spawned-settings.json` for the auto-compact window);
 - "mark <epic> complete": write `$ADW_HOME/epics/<epic>/COMPLETE.json` =
   `{"completed_at": <unix ts>, "by": "first-mate on the user's word"}` — only that exact slug.
 Say in one line what you sent where. If the tab's state changed so it no longer fits (dialog closed,
@@ -48,6 +48,15 @@ different agent in the pane), don't improvise — tell the user.
      and reconciles.
   Only on that event, once per event; never if the tab is working or the line lacks `[refreshable]`.
 - Log every nudge / refresh in `notes.md` as `nudge` / `refresh`.
+
+## Holds
+The user keeps the number of live epics within usage limits; there is no cap. `adw-lead-state fleet -`
+lists active vs paused.
+- On the user's word: `ADW_BY=user adw-lead-state pause <epic> "<reason>"` then tell its lead to
+  checkpoint (the board's Pause button does both); `adw-lead-state resume <epic>` then prompt the lead
+  `/adw-lead <epic>`, or relaunch it with `--settings $ADW_HOME/spawned-settings.json` if its tab is gone.
+- Paused epics' leads are expected idle: no check-ins, no refreshes, not Trouble.
+- Never pause or resume an epic on your own; when the user starts or resumes one, mention what else is active.
 
 ## Never
 1. Decide for the user: no product, scope, risk or merge calls; no answering a decision they haven't

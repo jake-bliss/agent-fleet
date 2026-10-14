@@ -14,6 +14,9 @@
 #   adw-lead-state reconcile <epic>                    poll PRs, update statuses, recompute ready
 #   adw-lead-state status <epic>                       print the DAG status table
 #   adw-lead-state ready  <epic>                       print dispatchable segment ids (respects budget)
+#   adw-lead-state pause  <epic> ["reason"]            put the epic on hold (PAUSED.json): dispatch nothing
+#   adw-lead-state resume <epic>                       lift the hold
+#   adw-lead-state fleet  _                            list active and paused epics
 #
 set -euo pipefail
 
@@ -23,7 +26,7 @@ MANIFEST="$ADW_HOME/manifest.json"
 
 case "${1:-}" in -h|--help|"") awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;; esac
 
-CMD="${1:?init|reconcile|status|ready}"
+CMD="${1:?init|reconcile|status|ready|pause|resume|fleet}"
 EPIC="${2:?epic name}"
 EPIC_DIR="$EPICS_DIR/$EPIC"
 GRAPH="$EPIC_DIR/graph.json"
@@ -31,6 +34,47 @@ GRAPH="$EPIC_DIR/graph.json"
 die() { echo "adw-lead-state: $*" >&2; exit 1; }
 
 case "$CMD" in
+pause)
+  [ -f "$GRAPH" ] || die "no epic '$EPIC'"
+  python3 - "$EPIC_DIR/PAUSED.json" "${3:-}" "${ADW_BY:-adw-lead-state}" <<'PY'
+import json, sys, time
+json.dump({"paused_at": int(time.time()), "by": sys.argv[3], "reason": sys.argv[2]}, open(sys.argv[1], "w"))
+with open(sys.argv[1].replace("PAUSED.json", "HOLDS.jsonl"), "a") as f:
+    f.write(json.dumps({"event": "pause", "at": int(time.time()), "by": sys.argv[3], "reason": sys.argv[2]}) + "\n")
+PY
+  echo "paused $EPIC: finish or checkpoint in-flight conductors, dispatch nothing, then: adw-status waiting \"epic paused\" --for 7d"
+  ;;
+resume)
+  [ -f "$EPIC_DIR/PAUSED.json" ] || die "$EPIC is not paused"
+  rm "$EPIC_DIR/PAUSED.json"
+  printf '{"event": "resume", "at": %s, "by": "%s"}\n' "$(date +%s)" "${ADW_BY:-adw-lead-state}" >> "$EPIC_DIR/HOLDS.jsonl"
+  echo "resumed $EPIC"
+  ;;
+fleet)
+  python3 - "$EPICS_DIR" <<'PY'
+import json, os, sys, time
+root = sys.argv[1]
+act, hold = [], []
+for e in sorted(os.listdir(root)):
+    d = os.path.join(root, e)
+    if not os.path.exists(os.path.join(d, "graph.json")) or os.path.exists(os.path.join(d, "COMPLETE.json")):
+        continue
+    g = json.load(open(os.path.join(d, "graph.json")))
+    if g.get("status") in ("done", "closed"):
+        continue
+    segs = g.get("segments") or []
+    fl = sum(s.get("status") in ("building", "pr-open") for s in segs)
+    left = sum(s.get("status") != "merged" for s in segs)
+    p = os.path.join(d, "PAUSED.json")
+    if os.path.exists(p):
+        j = json.load(open(p)); hold.append(f"  {e:<34} {int((time.time()-j['paused_at'])/86400)}d  {j.get('reason','')}")
+    elif left and time.time() - max(os.path.getmtime(os.path.join(dp, f)) for dp, _, fs in os.walk(d) for f in fs) < 3 * 86400:
+        act.append(f"  {e:<34} in-flight {fl}  open {left}")
+print(f"active {len(act)}")
+print("\n".join(act) or "  -")
+print(f"paused {len(hold)}"); print("\n".join(hold) or "  -")
+PY
+  ;;
 init)
   REPO_KEY="${3:?repo-key}"; GOAL="${4:?goal}"
   [ -d "$EPIC_DIR" ] && die "epic exists: $EPIC_DIR"
@@ -95,7 +139,8 @@ if mode == "reconcile":
 order = {"blocked": 0, "pr-open": 1, "building": 2, "ready": 3, "pending": 4, "merged": 5}
 if mode in ("reconcile", "status"):
     in_flight = sum(1 for s in segs if s["status"] in ("building", "pr-open"))
-    print(f"epic: {g['epic']}  repo: {g['repo']}  max_parallel: {g['max_parallel']}  in-flight: {in_flight}")
+    paused = os.path.exists(os.path.join(os.path.dirname(graph_path), "PAUSED.json"))
+    print(f"epic: {g['epic']}  repo: {g['repo']}  max_parallel: {g['max_parallel']}  in-flight: {in_flight}" + ("  ** PAUSED **" if paused else ""))
     if not segs:
         print("  (no segments yet; awaiting the decomposition gate)")
     for s in sorted(segs, key=lambda s: (order.get(s['status'], 9), s['id'])):
@@ -104,6 +149,9 @@ if mode in ("reconcile", "status"):
         print(f"  [{s['status']:<8}] {s['id']:<28} deps:{deps:<22} pr:{pr}")
 
 if mode == "ready":
+    if os.path.exists(os.path.join(os.path.dirname(graph_path), "PAUSED.json")):
+        print("# epic is PAUSED: dispatch nothing (adw-lead-state resume to lift)", file=sys.stderr)
+        sys.exit(0)
     in_flight = sum(1 for s in segs if s["status"] in ("building", "pr-open"))
     budget = max(0, g["max_parallel"] - in_flight)
     ready = [s["id"] for s in segs if s["status"] == "ready"][:budget]

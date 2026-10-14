@@ -6,7 +6,7 @@ description: "Drive one segment of build work (one brief → one PR) to merge: a
 # ADW — one segment to a merged PR
 
 `/adw <repo-key> <brief-path>` (repo-key ∈ `$ADW_HOME/manifest.json` repos, e.g. `web-app`; it gives
-`path`, `base_branch`, `human_approve`, `verify`). `$ADW_HOME` defaults to `~/.claude/adw`. Repos are
+`path`, `base_branch`, `verify`). `$ADW_HOME` defaults to `~/.claude/adw`. Repos are
 never moved. Given an epic → STOP, use `/adw-lead`.
 The why behind these rules: `references/rationale.md` — read it when a rule seems not to fit.
 
@@ -15,8 +15,8 @@ whole diffs or write code; reviews return conclusions. **Builder**: the `worker`
 default) or Codex; works in one assigned worktree, commits there, never pushes, never `--no-verify`.
 **6a**: a fresh `reviewer` agent on the strongest model, round 1 only. **Codex**: round 1 beside 6a,
 alone on every later review. **`ci-preflight`**: repos with `gate_tier: "fast"` in `ci-parity.json` run
-the fast jobs locally and the full suite on GitHub against a draft PR; others run the full suite
-locally (or on a remote CI box with `--full`). **The PR review bot**, if the repo has one, approves.
+the fast jobs locally and the full suite on GitHub against a draft PR (`--full` is refused there);
+others run the full suite locally (or on a remote CI box). **The PR review bot**, if the repo has one, approves.
 **The user**: product questions, and PRs the bot won't approve (every PR, in a repo with no bot).
 
 ## Hard rules
@@ -57,7 +57,7 @@ locally (or on a remote CI box with `--full`). **The PR review bot**, if the rep
 3. **Round 1** — when the build commit lands, ONE message, all backgrounded: `ci-preflight`; **6a**
    reviewer on the diff vs `origin/<base>` + `$ADW_HOME/review/review-contract.md` + every touched lens,
    **not** the brief (`$ADW_HOME/review/lenses/adversarial-review.md`); **6c**
-   `codex exec -C "<worktree>" -s read-only "<contract + lenses + review git diff origin/<base>...HEAD>" < /dev/null`.
+   `codex-review diff <worktree> --base origin/<base>` (contract + matching lenses built in; prints the verdict only).
    **Low** tier may skip 6a (never if Codex built): Codex + your 6b checklist with
    `callsite-coverage.md` is then the recorded Claude review. Re-check tier on the real diff — it only
    goes up.
@@ -65,7 +65,9 @@ locally (or on a remote CI box with `--full`). **The PR review bot**, if the rep
    was right. **6b** checklist: DoD, scope fences, the repo's location/shape conventions. Green tests
    and a clean linter are preconditions, not evidence. **Only a contract `fail` blocks** (any CRITICAL,
    or IMPORTANT at high confidence); the rest → **Known / deferred** in the PR body. Record on the
-   reviewed commit (carries to fixes): `review-receipt claude pass "<found; fixes required: …>"` — pass
+   reviewed commit (carries to fixes): `review-receipt claude pass "<found; fixes required: …>" --found N
+   --unique N --sev S` and the same for `codex` (adjudicated-real findings, how many the other model
+   missed, worst severity high|med|low|none; it feeds the review ledger, `review-receipt --ledger`) — pass
    = adjudicated, blockers become the fix list. `fail` only when it must be redesigned (a later round-1
    pass clears it).
 5. **Fix → Codex-only delta** — ONE combined fix list. Codex reviews `git diff <round-1 SHA>..HEAD`
@@ -77,21 +79,25 @@ locally (or on a remote CI box with `--full`). **The PR review bot**, if the rep
    `review-receipt codex pass "<last Codex pass>"`. The hook needs CI + Codex on this SHA, Claude on
    this SHA or an ancestor (or the same diff rebased). `$ADW_HOME/docs/ci-gate.md`.
 7. **Push** — fast tier: `git push` + `gh pr create --fill --draft`; ONE backgrounded
-   `gh pr checks <pr> --watch --fail-fast > <scratchpad>/checks.log 2>&1` (never poll); read only
-   failing jobs/tests (`gh run view --log-failed | rg -m 40 …`). **Red** → worker fix, Codex delta,
+   `pr-state <pr> --wait ci > <scratchpad>/checks.log 2>&1` (never poll); read only failing jobs/tests
+   (`pr-state <pr> --failures`, or `gh run view --log-failed | rg -m 40 …`). **Red** → worker fix, Codex delta,
    `ci-preflight`, push, still draft; plainly infra (runner shutdown, expired log) or a known flake on
    untouched code → `gh run rerun <id> --failed` once, logged. **Green on current head** →
    `gh pr ready <pr>`. Never ready on red or pending. Full tier: `gh pr create --fill`; a remote-only
    red is a parity gap — fix the code AND `ci-parity.json`.
-8. **Review bot loop** — its (and any other bot's, e.g. Greptile's) inline comments are findings, same
+8. **Review bot loop** — its (and any other bot's) inline comments are findings, same
    exit rule; reply on every thread with the fix commit or why not. Approved for current head → 9.
    **High-risk** (risk capped, "human review required", "needs a human") → the user now. Comments →
    worker fix, Codex delta, `ci-preflight`, push; fast tier non-trivial fix → `gh pr ready --undo`
-   first, ready again only on green GitHub CI. **≤ 3 rounds**, then the user with what's open;
-   fix-streak stop applies. No bot: surface to the user for approval — unless the manifest sets
-   `human_approve: false` (merge once green).
-9. **Merge** — bot approved current head + CI green + `mergeStateStatus` `CLEAN` → squash-merge
-   without asking, watch the deploy if merging deploys. Anything else → the user approves or forces.
+   first, ready again (`pr-ship <pr>`) only on green GitHub CI. Read findings with
+   `pr-state <pr> --findings`; reply with `pr-reply <pr> <comment-url|comment-id|thread-id> "<body>" [--resolve]`. **≤ 3 rounds**, then the user with what's open;
+   fix-streak stop applies. No bot: surface to the user for approval — unless the repo is `"merge": "green"` in
+   `$ADW_HOME/pr-tools.json` (merge once green).
+9. **Merge** — bot approved current head + CI green + `mergeStateStatus` `CLEAN` → `pr-ship <pr>`
+   (squash-merges only when those hold; exit 3 = wait, 4 = the user's call) without asking, then ONE
+   backgrounded `pr-state <pr> --wait deployed` (exit 2 = a deploy failed → the user; exit 4 = no deploy ran or it was cancelled/superseded → check the default branch's latest deploy covers the commit, not an escalation). Anything else → the
+   user approves or forces: file the ask with the merge option starting `ship <repo>#<n>@<head sha>`; on
+   that answer run `pr-ship <pr> --approved-by <ask-id>` (any push voids it).
 
 ## Stop early — the ONLY interrupts
 Business/product question (lettered options) or brief ambiguity code + house style can't settle;

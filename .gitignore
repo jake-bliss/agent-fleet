@@ -1,3 +1,11 @@
 __pycache__/
 *.pyc
 .DS_Store
+*.bak-*
+*.swp
+*.log
+review-ledger.jsonl
+merge-overrides.jsonl
+pr-tools.json
+PAUSED.json
+HOLDS.jsonl

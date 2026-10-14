@@ -1,0 +1,821 @@
+#!/usr/bin/env python3
+"""One compact line of state per GitHub PR. Usage: pr-state --help"""
+import argparse
+import base64
+import concurrent.futures
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+
+
+
+def load_config():
+    path = os.environ.get("PR_TOOLS_CONFIG") or os.path.join(
+        os.environ.get("ADW_HOME") or os.path.expanduser("~/.claude/adw"), "pr-tools.json")
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+CONFIG = load_config()
+
+
+def repo_config(repo):
+    entry = (CONFIG.get("repos") or {}).get(repo)
+    return entry if isinstance(entry, dict) else {}
+
+
+def bot_login(repo):
+    return repo_config(repo).get("bot") or None
+
+
+def marker_prefix():
+    return CONFIG.get("marker_prefix") or "review-bot"
+
+
+def report_marker():
+    return CONFIG.get("report_marker") or "<!-- %s:report -->" % marker_prefix()
+
+
+def review_prefix():
+    return CONFIG.get("review_prefix") or "Review bot:"
+
+
+HIGH_RISK = re.compile(
+    r"requesting a human review|human approval is still required|human review is required|needs a human merge decision",
+    re.I,
+)
+FAIL_CHECK = {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"}
+OK_CHECK = {"SUCCESS", "SKIPPED", "NEUTRAL"}
+PENDING_STATUS = {"PENDING", "EXPECTED"}
+CONDITIONS = ("ci", "ci-green", "bot", "approved", "merged", "deployed", "closed", "any-change")
+POST_MERGE_EVENTS = {"push", "workflow_run"}
+DEPLOY_NAME = re.compile(r"deploy|release|publish|gke|cloud ?run", re.I)
+SETTLE_SECONDS = 60
+
+PR_FIELDS = """
+id number title author{login} state isDraft merged url mergeCommit{oid} headRefOid headRefName baseRefName mergeStateStatus reviewDecision
+commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){
+  pageInfo{hasNextPage endCursor}
+  nodes{__typename
+    ... on CheckRun{databaseId name status conclusion detailsUrl startedAt checkSuite{workflowRun{workflow{name}}}}
+    ... on StatusContext{context state targetUrl createdAt}}}}}}}
+reviews(last:100){pageInfo{hasPreviousPage startCursor} nodes{author{login __typename} state body commit{oid}}}
+latestOpinionatedReviews(first:100){pageInfo{hasNextPage} nodes{author{login} state}}
+comments(last:100){pageInfo{hasPreviousPage startCursor} nodes{author{login __typename} body}}
+reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{isResolved}}
+"""
+QUERY = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){defaultBranchRef{name} pullRequest(number:$number){%s}}}" % PR_FIELDS
+MORE = {
+    "contexts": ("forward", "... on PullRequest{commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100,after:$c){"
+                 "pageInfo{hasNextPage endCursor} nodes{__typename ... on CheckRun{databaseId name status conclusion detailsUrl startedAt "
+                 "checkSuite{workflowRun{workflow{name}}}} ... on StatusContext{context state targetUrl createdAt}}}}}}}}"),
+    "reviews": ("backward", "... on PullRequest{reviews(last:100,before:$c){pageInfo{hasPreviousPage startCursor} "
+                "nodes{author{login __typename} state body commit{oid}}}}"),
+    "comments": ("backward", "... on PullRequest{comments(last:100,before:$c){pageInfo{hasPreviousPage startCursor} "
+                 "nodes{author{login __typename} body}}}"),
+    "reviewThreads": ("forward", "... on PullRequest{reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} "
+                      "nodes{isResolved}}}"),
+}
+
+
+class PrError(Exception):
+    pass
+
+
+def gh_graphql(query, variables):
+    body = json.dumps({"query": query, "variables": variables})
+    proc = subprocess.run(["gh", "api", "graphql", "--input", "-"], input=body, capture_output=True, text=True)
+    if proc.returncode != 0 and not proc.stdout.strip():
+        raise PrError(proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "gh api graphql failed")
+    try:
+        data = json.loads(proc.stdout)
+    except ValueError:
+        raise PrError("gh returned non-JSON: " + proc.stdout[:120])
+    if data.get("errors"):
+        raise PrError(data["errors"][0].get("message", "graphql error"))
+    return data["data"]
+
+
+def norm(login):
+    return re.sub(r"\[bot\]$", "", login or "")
+
+
+def default_repo():
+    proc = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True)
+    url = proc.stdout.strip()
+    match = re.search(r"github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$", url)
+    if not match:
+        raise PrError("cannot infer repo from cwd git remote; pass -R owner/repo")
+    return f"{match.group(1)}/{match.group(2)}"
+
+
+def parse_target(arg, repo_opt):
+    match = re.match(r"https?://github\.com/([^/]+/[^/]+)/pull/(\d+)", arg)
+    if match:
+        return match.group(1), int(match.group(2))
+    match = re.match(r"^([^/\s]+/[^#\s]+)#(\d+)$", arg)
+    if match:
+        return match.group(1), int(match.group(2))
+    if re.fullmatch(r"#?\d+", arg):
+        return repo_opt or default_repo(), int(arg.lstrip("#"))
+    raise PrError(f"cannot parse PR reference: {arg}")
+
+
+def fetch(repo, number):
+    owner, name = repo.split("/", 1)
+    repo_data = gh_graphql(QUERY, {"owner": owner, "name": name, "number": number})["repository"]
+    pr = repo_data["pullRequest"]
+    if pr is None:
+        raise PrError(f"{repo}#{number} not found")
+    pr["_default_branch"] = (repo_data.get("defaultBranchRef") or {}).get("name")
+    rollup = (pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"] or {"contexts": {"nodes": [], "pageInfo": {}}}) \
+        if pr["commits"]["nodes"] else {"contexts": {"nodes": [], "pageInfo": {}}}
+    conns = {"contexts": rollup["contexts"], "reviews": pr["reviews"], "comments": pr["comments"],
+             "reviewThreads": pr["reviewThreads"]}
+    bot = bot_login(repo)
+    limits = {"contexts": 20, "reviews": 5, "comments": 10, "reviewThreads": 20}
+    for key, conn in conns.items():
+        direction, frag = MORE[key]
+        for _ in range(limits[key]):
+            info = conn.get("pageInfo") or {}
+            cursor = info.get("endCursor") if direction == "forward" else info.get("startCursor")
+            more = info.get("hasNextPage") if direction == "forward" else info.get("hasPreviousPage")
+            if not more or not cursor:
+                break
+            if key == "comments" and (not bot or find_report(conn["nodes"], bot)):
+                break
+            query = "query($id:ID!,$c:String!){node(id:$id){%s}}" % frag
+            node = gh_graphql(query, {"id": pr["id"], "c": cursor})["node"]
+            if key == "contexts":
+                page = node["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]
+            else:
+                page = node[key]
+            page_nodes = page["nodes"]
+            conn["nodes"] = (conn["nodes"] + page_nodes) if direction == "forward" else (page_nodes + conn["nodes"])
+            conn["pageInfo"] = page["pageInfo"]
+    if bot and (conns["comments"].get("pageInfo") or {}).get("hasPreviousPage") \
+            and not find_report(conns["comments"]["nodes"], bot):
+        conns["comments"]["capped"] = True
+    return pr, conns
+
+
+def is_bot(author, login):
+    author = author or {}
+    return norm(author.get("login")) == login and author.get("__typename") == "Bot"
+
+
+def find_report(comments, login):
+    found = None
+    for comment in comments:
+        body = comment.get("body") or ""
+        if report_marker() in body and is_bot(comment.get("author"), login):
+            found = comment
+    return found
+
+
+def marker(body, name):
+    match = re.search(r"<!-- %s:%s=(\S+) -->" % (re.escape(marker_prefix()), name), body)
+    return match.group(1) if match else None
+
+
+def analyze_ci(contexts):
+    latest = {}
+    for ctx in contexts:
+        if ctx["__typename"] == "CheckRun":
+            wf = ((ctx.get("checkSuite") or {}).get("workflowRun") or {}).get("workflow") or {}
+            key = ("check", wf.get("name"), ctx["name"])
+            entry = {"name": ctx["name"], "url": ctx.get("detailsUrl"), "order": (ctx.get("databaseId") or 0, ""),
+                     "pending": ctx["status"] != "COMPLETED",
+                     "failed": ctx["status"] == "COMPLETED" and ctx.get("conclusion") in FAIL_CHECK,
+                     "ok": ctx["status"] == "COMPLETED" and ctx.get("conclusion") in OK_CHECK}
+        else:
+            key = ("status", ctx["context"])
+            state = ctx["state"]
+            entry = {"name": ctx["context"], "url": ctx.get("targetUrl"), "order": (0, ctx.get("createdAt") or ""),
+                     "pending": state in PENDING_STATUS, "failed": state in {"ERROR", "FAILURE"}, "ok": state == "SUCCESS"}
+        if key not in latest or entry["order"] >= latest[key]["order"]:
+            latest[key] = entry
+    checks = list(latest.values())
+    return {
+        "total": len(checks),
+        "ok": sum(c["ok"] for c in checks),
+        "pending": sum(c["pending"] for c in checks),
+        "failed": [{"name": c["name"], "url": c["url"]} for c in checks if c["failed"]],
+        "nonpass": [c["name"] for c in checks if not (c["pending"] or c["failed"] or c["ok"])],
+    }
+
+
+def gh_rest(path):
+    proc = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise PrError(proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else f"gh api {path} failed")
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        raise PrError("gh returned non-JSON: " + proc.stdout[:120])
+
+
+def post_merge_runs(repo, sha):
+    runs = gh_rest(f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100").get("workflow_runs", [])
+    latest = {}
+    for run in runs:
+        if run.get("event") not in POST_MERGE_EVENTS:
+            continue
+        key = run.get("name")
+        if key not in latest or (run.get("run_attempt") or 0, run.get("created_at") or "") >= \
+                (latest[key].get("run_attempt") or 0, latest[key].get("created_at") or ""):
+            latest[key] = run
+    out = []
+    for run in latest.values():
+        done = run.get("status") == "completed"
+        out.append({"name": run.get("name"), "url": run.get("html_url"), "deploy": bool(DEPLOY_NAME.search(run.get("name") or "")),
+                    "pending": not done, "superseded": done and run.get("conclusion") == "cancelled",
+                    "success": done and run.get("conclusion") == "success",
+                    "failed": done and run.get("conclusion") != "cancelled" and (run.get("conclusion") or "").upper() in FAIL_CHECK,
+                    "conclusion": run.get("conclusion")})
+    deploys = [r for r in out if r["deploy"]]
+    return {
+        "total": len(out), "pending": sum(r["pending"] for r in out),
+        "deploys": len(deploys), "deploys_pending": sum(r["pending"] for r in deploys),
+        "superseded": sum(r["superseded"] for r in deploys),
+        "deploys_ok": sum(r["success"] for r in deploys),
+        "failed": [{"name": r["name"], "url": r["url"], "deploy": r["deploy"]} for r in out if r["failed"]],
+    }
+
+
+def sha7(sha):
+    return (sha or "")[:7]
+
+
+def analyze_bot(pr, conns, repo):
+    login = bot_login(repo)
+    head = pr["headRefOid"]
+    out = {"login": login, "status": None}
+    if pr["isDraft"] and pr["state"] == "OPEN":
+        out["status"] = "draft"
+        return out
+    if not login:
+        out["status"] = "n/a"
+        return out
+    reviews = [r for r in conns["reviews"]["nodes"]
+               if is_bot(r.get("author"), login) and (r.get("body") or "").startswith(review_prefix())]
+    report_comment = find_report(conns["comments"]["nodes"], login)
+    report_body = report_comment["body"] if report_comment else ""
+    report_head = marker(report_body, "head") if report_comment else None
+    rounds = max(int(marker(report_body, "reviews") or 0) if report_comment else 0,
+                 len({(r.get("commit") or {}).get("oid") for r in reviews}))
+    at_head = [r for r in reviews if (r.get("commit") or {}).get("oid") == head]
+    review = at_head[-1] if at_head else (reviews[-1] if reviews else None)
+    approved = bool(at_head) and at_head[-1]["state"] == "APPROVED"
+    report_current = report_comment is not None and report_head == head
+    current = bool(at_head) or report_current
+    high_risk = bool(report_comment and HIGH_RISK.search(report_body))
+    if not report_comment and conns["comments"].get("capped"):
+        high_risk = True
+        out["high_risk_reason"] = "report not found within paging cap"
+    risk_score = None
+    triage = marker(report_body, "triage") if report_comment else None
+    if triage:
+        try:
+            blob = json.loads(base64.b64decode(triage))
+            risk_score = blob.get("risk_score")
+            if blob.get("human_review_required") or any(
+                    "cap" in k and v is True for k, v in blob.items()) or re.search(
+                    r"\bcapped (at|to)\b", str(blob.get("risk_reason", "")), re.I):
+                high_risk = True
+        except (ValueError, TypeError):
+            pass
+    score = None
+    if review and (review.get("commit") or {}).get("oid") == head:
+        match = re.search(r"(\d)/5", (review.get("body") or "").split("\n")[0])
+        score = match.group(1) if match else None
+    if score is None and report_comment and report_head == head:
+        score = marker(report_body, "score")
+        if score is None:
+            match = re.search(r"Confidence Score:[^\n]*?(\d)/5", report_body, re.I)
+            score = match.group(1) if match else None
+    label = None
+    if review:
+        first = review["body"].split("\n")[0]
+        label = ("Approved" if "Auto-approved" in first else "Changes" if "Changes needed" in first
+                 else "Findings" if "Findings" in first else "Review")
+        if review["state"] == "APPROVED":
+            label = "Approved"
+    elif report_comment:
+        match = re.search(r"\*\*Verdict:\*\*\s*(.+)", report_body)
+        label = "Report " + re.sub(r"[^\w ]", "", match.group(1)).strip() if match else "Report"
+    findings = []
+    if report_current and not approved:
+        for path in re.findall(r"^\s*-\s+\*\*`([^`]+)`\*\*", report_body, re.M):
+            if path not in findings:
+                findings.append(path)
+    out.update({
+        "status": "approved" if approved else "none" if not (review or report_comment) else "current" if current else "stale",
+        "rounds": rounds, "label": label, "score": score, "high_risk": high_risk, "risk_score": risk_score,
+        "verdict_head": head if current else (review.get("commit") or {}).get("oid") if review else report_head,
+        "approved": approved, "has_verdict": current, "top_findings": findings[:3],
+    })
+    return out
+
+
+def changes_requested(latest_reviews):
+    if not latest_reviews or latest_reviews["pageInfo"]["hasNextPage"]:
+        return ["(review history incomplete)"]
+    return sorted(norm((r.get("author") or {}).get("login")) or "?" for r in latest_reviews["nodes"]
+                  if r["state"] == "CHANGES_REQUESTED")
+
+
+def build(repo, number, runs=False):
+    pr, conns = fetch(repo, number)
+    if pr["state"] == "OPEN" and pr["mergeStateStatus"] == "UNKNOWN":
+        time.sleep(3)
+        pr, conns = fetch(repo, number)
+    ci = analyze_ci(conns["contexts"]["nodes"])
+    fp = analyze_bot(pr, conns, repo)
+    state = "merged" if pr["merged"] else pr["state"].lower()
+    open_threads = sum(1 for t in conns["reviewThreads"]["nodes"] if not t["isResolved"])
+    merge_commit = (pr.get("mergeCommit") or {}).get("oid") if pr["merged"] else None
+    return {
+        "repo": repo, "number": number, "title": pr["title"], "url": pr["url"], "state": state,
+        "draft": pr["isDraft"], "head": pr["headRefOid"],
+        "author": norm((pr.get("author") or {}).get("login")), "base": pr["baseRefName"],
+        "default_branch": pr.get("_default_branch"), "changes_requested": changes_requested(pr.get("latestOpinionatedReviews")), "ci": ci, "bot": fp,
+        "review_decision": pr["reviewDecision"], "merge_state": pr["mergeStateStatus"], "open_threads": open_threads,
+        "merge_commit": merge_commit, "post_merge": post_merge_runs(repo, merge_commit) if merge_commit and runs else None,
+    }
+
+
+def render(info):
+    head_state = info["state"]
+    if info["state"] == "open":
+        head_state = "draft (the review bot skips drafts)" if info["draft"] else "ready"
+    parts = [f"{info['repo'].split('/')[1]}#{info['number']} {head_state}", f"head {sha7(info['head'])}"]
+    ci = info["ci"]
+    if ci["total"] == 0:
+        parts.append("CI none")
+    elif ci["failed"]:
+        names = ", ".join(c["name"] for c in ci["failed"][:5]) + (f" +{len(ci['failed']) - 5}" if len(ci["failed"]) > 5 else "")
+        parts.append(f"CI ✘ {names}" + (f" · … {ci['pending']} pending" if ci["pending"] else ""))
+    elif ci.get("nonpass"):
+        parts.append("CI ⚠ nonpass: " + ", ".join(ci["nonpass"]))
+    elif ci["pending"]:
+        parts.append(f"CI … {ci['pending']} pending ({ci['ok']}/{ci['total']} ✔)")
+    else:
+        parts.append(f"CI ✔ {ci['ok']}/{ci['total']}")
+    fp = info["bot"]
+    if fp["status"] == "n/a":
+        parts.append("bot n/a")
+    elif fp["status"] == "none":
+        parts.append("bot pending")
+    elif fp["status"] in ("current", "approved", "stale"):
+        seg = f"bot r{fp['rounds']} {fp['label']}"
+        if fp["score"]:
+            seg += f" {fp['score']}/5"
+        if fp["status"] == "stale":
+            seg += f" STALE@{sha7(fp['verdict_head'])}"
+        if fp["high_risk"]:
+            seg += " [HIGH-RISK]"
+        parts.append(seg)
+    if info["state"] == "open":
+        parts.append(f"review {info['review_decision'] or 'none'}")
+        parts.append(f"merge {info['merge_state']}")
+    if info.get("merge_commit"):
+        parts.append(f"merge {sha7(info['merge_commit'])}")
+    pm = info.get("post_merge")
+    if pm is not None:
+        if pm["total"] == 0:
+            parts.append("main runs none yet")
+        else:
+            seg = (f"deploy {pm['deploys'] - pm['deploys_pending'] - pm['superseded'] - sum(f['deploy'] for f in pm['failed'])}"
+                   f"/{pm['deploys']} ✔")
+            if pm["superseded"]:
+                seg += f" ({pm['superseded']} superseded by a later main push)"
+            if pm["failed"]:
+                seg += " · main ✘ " + ", ".join(f["name"] for f in pm["failed"][:4])
+            if pm["pending"]:
+                seg += f" · … {pm['pending']} main runs pending"
+            parts.append(seg)
+    parts.append(f"threads {info['open_threads']} open")
+    title = info["title"]
+    parts.append('"' + (title if len(title) <= 60 else title[:59] + "…") + '"')
+    lines = [" · ".join(parts)]
+    extra = []
+    if ci["failed"]:
+        extra.append("failing: " + "; ".join(f"{c['name']} {c['url'] or ''}".strip() for c in ci["failed"][:5]))
+    if pm and pm["failed"]:
+        extra.append("main failing: " + "; ".join(f"{f['name']} {f['url'] or ''}".strip() for f in pm["failed"][:4]))
+    if fp.get("top_findings"):
+        extra.append("bot: " + ", ".join(fp["top_findings"]))
+    if extra:
+        lines.append("  " + " · ".join(extra))
+    return "\n".join(lines)
+
+
+def deploy_unverified(pm):
+    return not pm.get("deploys_ok") or bool(pm.get("superseded"))
+
+
+def deploy_reason(pm):
+    if not pm.get("deploys"):
+        return "no deploy run on the merge commit"
+    return "deploy cancelled (likely superseded)" if pm.get("superseded") else "no successful deploy run"
+
+
+def condition_status(cond, info, baseline):
+    """Returns 'met', 'impossible' or 'waiting'."""
+    state = info["state"]
+    fp = info["bot"]
+    ci = info["ci"]
+    closed_unmerged = state == "closed"
+    if cond == "closed":
+        return "met" if state != "open" else "waiting"
+    if cond == "merged":
+        return "met" if state == "merged" else "impossible" if closed_unmerged else "waiting"
+    if cond == "deployed":
+        if closed_unmerged:
+            return "impossible"
+        pm = info.get("post_merge")
+        if state != "merged" or not pm or pm["total"] == 0 or pm["pending"]:
+            return "waiting"
+        if any(f["deploy"] for f in pm["failed"]):
+            return "impossible"
+        return "settled_undeployed" if deploy_unverified(pm) else "settled"
+    if closed_unmerged:
+        return "impossible"
+    if cond == "any-change":
+        if render(info) != baseline:
+            return "met"
+        return "impossible" if state != "open" else "waiting"
+    if cond == "ci":
+        met = ci["total"] > 0 and ci["pending"] == 0
+    elif cond == "ci-green":
+        if ci["failed"] or ci.get("nonpass"):
+            return "impossible"
+        met = ci["total"] > 0 and ci["pending"] == 0
+    elif cond == "bot":
+        met = fp["status"] in ("approved", "current")
+    else:
+        met = fp["approved"] if fp.get("login") else info["review_decision"] == "APPROVED"
+        if fp["status"] == "draft":
+            met = False
+    if met:
+        return "met"
+    return "impossible" if state == "merged" else "waiting"
+
+
+def parse_duration(text):
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", text)
+    if not match:
+        raise argparse.ArgumentTypeError(f"bad duration: {text}")
+    return float(match.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600}[match.group(2)]
+
+
+def emit(infos, as_json):
+    if as_json:
+        for info in infos:
+            print(json.dumps(info, ensure_ascii=False), flush=True)
+    else:
+        for info in infos:
+            print(render(info), flush=True)
+
+
+def snapshot(targets, runs=False):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(targets), 6)) as pool:
+        return list(pool.map(lambda t: build(*t, runs=runs), targets))
+
+
+def wait(targets, cond, args):
+    deadline = time.monotonic() + args.timeout
+    runs = cond == "deployed"
+    infos = snapshot(targets, runs)
+    baseline = {(i["repo"], i["number"]): render(i) for i in infos}
+    shown = None
+    delay = args.interval or 30
+    errors = 0
+    settled = {}
+    while True:
+        statuses = []
+        for i in infos:
+            key = (i["repo"], i["number"])
+            status = condition_status(cond, i, baseline[key])
+            if status in ("settled", "settled_undeployed"):
+                # Chained workflow_run deploys appear after their trigger finishes; require a quiet window.
+                total = i["post_merge"]["total"]
+                first = settled.setdefault(key, (total, time.monotonic()))
+                if first[0] != total:
+                    settled[key] = (total, time.monotonic())
+                if time.monotonic() - settled[key][1] < SETTLE_SECONDS:
+                    status = "waiting"
+                elif status == "settled":
+                    status = "met"
+                else:
+                    status = "undeployed"
+                    i["deploy_reason"] = deploy_reason(i["post_merge"])
+            else:
+                settled.pop(key, None)
+            statuses.append(status)
+        text = [render(i) for i in infos]
+        if text != shown:
+            emit(infos, args.json)
+            shown = text
+            delay = args.interval or 30
+        if "impossible" in statuses:
+            return 2
+        if "undeployed" in statuses:
+            emit(infos, args.json)
+            for i in infos:
+                if i.get("deploy_reason"):
+                    print(f"pr-state: not deployed by this commit's runs: {i['deploy_reason']}; verify", file=sys.stderr)
+            return 4
+        if all(s == "met" for s in statuses):
+            return 0
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return 1
+        time.sleep(min(SETTLE_SECONDS if settled else delay, remaining))
+        if not args.interval:
+            delay = min(delay * 1.5, 120)
+        try:
+            infos = snapshot(targets, runs)
+            errors = 0
+        except PrError as exc:
+            errors += 1
+            if errors >= 5:
+                print(f"pr-state: {exc}", file=sys.stderr)
+                return 3
+
+
+FINDINGS_QUERY = """query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){
+id author{login} reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line originalLine
+comments(first:50){totalCount nodes{author{login} body url}}}}}}}"""
+
+FINDINGS_MORE = """query($id:ID!,$c:String!){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line originalLine
+comments(first:50){totalCount nodes{author{login} body url}}}}}}}"""
+
+
+def clean_body(body, limit):
+    body = re.sub(r"<!--.*?-->", "", body or "", flags=re.S)
+    body = re.sub(r"<details>.*?</details>", "", body, flags=re.S)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return body if len(body) <= limit else body[:limit - 1] + "…"
+
+
+def print_findings(repo, number, mode, limit):
+    owner, name = repo.split("/", 1)
+    pr = gh_graphql(FINDINGS_QUERY, {"owner": owner, "name": name, "number": number})["repository"]["pullRequest"]
+    conn = pr["reviewThreads"]
+    for _ in range(50):
+        info = conn.get("pageInfo") or {}
+        if not info.get("hasNextPage"):
+            break
+        page = gh_graphql(FINDINGS_MORE, {"id": pr["id"], "c": info.get("endCursor")})["node"]["reviewThreads"]
+        conn["nodes"] = conn["nodes"] + page["nodes"]
+        conn["pageInfo"] = page["pageInfo"]
+    if (conn.get("pageInfo") or {}).get("hasNextPage"):
+        raise PrError(f"{repo}#{number} has too many review threads to page through")
+    pr_author = norm((pr.get("author") or {}).get("login"))
+    threads = [t for t in pr["reviewThreads"]["nodes"] if t["comments"]["nodes"]
+               and norm((t["comments"]["nodes"][0].get("author") or {}).get("login")) != pr_author]
+    shown = [t for t in threads if mode == "all" or not t["isResolved"]]
+    print(f"{name}#{number} findings: {len(shown)} shown · {sum(not t['isResolved'] for t in threads)} open · "
+          f"{sum(t['isResolved'] for t in threads)} resolved")
+    for t in shown:
+        first = t["comments"]["nodes"][0]
+        replies = t["comments"]["totalCount"] - 1
+        state = "resolved" if t["isResolved"] else "outdated" if t["isOutdated"] else "open"
+        replied = any(norm((c.get("author") or {}).get("login")) == pr_author for c in t["comments"]["nodes"][1:])
+        print(f"\n[{state}{' · replied' if replied else ' · no reply' if not t['isResolved'] else ''}] "
+              f"{t['path']}:{t['line'] or t['originalLine']} · {norm((first.get('author') or {}).get('login'))}"
+              f"{f' · {replies} replies' if replies else ''}\n  {first['url']}")
+        print("  " + clean_body(first["body"], limit).replace("\n", "\n  "))
+
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+TS_PREFIX = re.compile(r"^\ufeff?\d{4}-\d\d-\d\dT[\d:.]+Z ?")
+BLOCK_START = re.compile(r"^\s*(\d+\) )?(Failure|Error):\s*$|^\s*Failure/Error:")
+SINGLE_LINE = [
+    re.compile(r"^\S+:\d+:\d+: [CWEFR]: .+"),
+    re.compile(r"error TS\d+"),
+    re.compile(r"^\s*(●|FAIL\b)"),
+    re.compile(r"##\[error\]"),
+]
+BLOCK_LINES = 8
+JOB_URL = re.compile(r"/actions/runs/(\d+)/job/(\d+)")
+
+
+def extract_failures(text, max_lines=60):
+    lines = [TS_PREFIX.sub("", ANSI.sub("", raw)).rstrip() for raw in text.splitlines()]
+    out, seen = [], set()
+
+    def add(line):
+        if line.strip() and line not in seen:
+            seen.add(line)
+            out.append(line)
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if BLOCK_START.search(line):
+            if i and re.match(r"^\s*\d+\) \S", lines[i - 1]):
+                add(lines[i - 1])
+            add(line)
+            taken = 0
+            i += 1
+            while i < len(lines) and taken < BLOCK_LINES and lines[i].strip():
+                add(lines[i])
+                taken += 1
+                i += 1
+            continue
+        if any(p.search(line) for p in SINGLE_LINE):
+            add(line)
+        i += 1
+    truncated = max(0, len(out) - max_lines)
+    return out[:max_lines], truncated
+
+
+def job_log(repo, job_id):
+    proc = subprocess.run(["gh", "api", "--allow-escape-sequences", f"repos/{repo}/actions/jobs/{job_id}/logs"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise PrError(proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "log fetch failed")
+    return proc.stdout
+
+
+def print_failures(repo, number, max_lines):
+    info = build(repo, number)
+    failed = info["ci"]["failed"]
+    print(f"{repo.split('/')[1]}#{number} head {sha7(info['head'])} · {len(failed)} failed check(s)")
+    if not failed:
+        print("no failures")
+        return 0
+    status = 0
+    for check in failed:
+        url = check["url"] or ""
+        match = JOB_URL.search(url)
+        print(f"\n== {check['name']}")
+        if not match:
+            print(f"  not a GitHub Actions job: {url or 'no details URL'}")
+            continue
+        run_id, job_id = match.groups()
+        try:
+            lines, truncated = extract_failures(job_log(repo, job_id), max_lines)
+        except PrError as exc:
+            print(f"  could not fetch log ({exc})")
+            print(f"  full log: gh run view {run_id} -R {repo} --job {job_id} --log-failed")
+            status = 1
+            continue
+        for line in lines:
+            print("  " + line)
+        if truncated:
+            print(f"  ... {truncated} more lines (raise --max-lines)")
+        elif not lines:
+            print("  no recognizable failure lines")
+        print(f"  full log: gh run view {run_id} -R {repo} --job {job_id} --log-failed")
+    return status
+
+
+def run_summary(run):
+    status = run.get("conclusion") if run.get("status") == "completed" else run.get("status")
+    return {"id": run.get("id"), "name": run.get("name"), "event": run.get("event"), "status": status,
+            "head": run.get("head_sha"), "branch": run.get("head_branch"), "created": run.get("created_at"),
+            "url": run.get("html_url")}
+
+
+def run_line(summary):
+    return " · ".join(str(x) for x in (summary["name"], summary["event"], summary["status"], sha7(summary["head"]),
+                                       summary["branch"], summary["created"], summary["url"]))
+
+
+def run_jobs(repo, run_id):
+    jobs, page = [], 1
+    while True:
+        batch = gh_rest(f"repos/{repo}/actions/runs/{run_id}/jobs?per_page=100&page={page}").get("jobs", [])
+        jobs += batch
+        if len(batch) < 100:
+            return jobs
+        page += 1
+
+
+def print_run(repo, run_id, failures, max_lines, as_json):
+    summary = run_summary(gh_rest(f"repos/{repo}/actions/runs/{run_id}"))
+    failed = [j for j in run_jobs(repo, run_id) if (j.get("conclusion") or "").upper() in FAIL_CHECK]
+    if as_json:
+        print(json.dumps({**summary, "failed_jobs": [j.get("name") for j in failed]}, ensure_ascii=False))
+        return 0
+    print(run_line(summary))
+    status = 0
+    for job in failed:
+        print(f"failed job: {job.get('name')}")
+        if not failures:
+            continue
+        try:
+            lines, truncated = extract_failures(job_log(repo, job["id"]), max_lines)
+        except PrError as exc:
+            print(f"  could not fetch log ({exc})")
+            status = 1
+            continue
+        for line in lines:
+            print("  " + line)
+        if truncated:
+            print(f"  ... {truncated} more lines (raise --max-lines)")
+        elif not lines:
+            print("  no recognizable failure lines")
+    return status
+
+
+def list_runs(repo, branch, event, sha, limit, as_json):
+    params = [(k, v) for k, v in (("branch", branch), ("event", event), ("head_sha", sha)) if v]
+    query = "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in params + [("per_page", limit)])
+    for run in gh_rest(f"repos/{repo}/actions/runs?{query}").get("workflow_runs", [])[:limit]:
+        summary = run_summary(run)
+        print(json.dumps(summary, ensure_ascii=False) if as_json else run_line(summary))
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="pr-state",
+        description="One compact line of state per PR. Exit codes with --wait: 0 met, 1 timeout (also: a merged PR with no "
+                    "post-merge runs yet keeps waiting for deployed), 2 impossible (closed unmerged, CI failed or non-passing for "
+                    "ci-green, merged without the condition, a deploy-named workflow failed on the merge commit for deployed), "
+                    "3 persistent gh error, 4 deployed not verified (after the runs settle: no deploy-named run on the merge "
+                    "commit, or one was cancelled, likely superseded; verify manually; --json adds a deploy_reason field). "
+                    "A merged PR's line shows its "
+                    "merge commit and the push/workflow_run runs on it (deploy N/M); --wait deployed waits for them all "
+                    f"to finish, then {SETTLE_SECONDS}s quiet for chained runs.")
+    parser.add_argument("prs", nargs="*", help="PR number, URL or owner/repo#N")
+    parser.add_argument("--run", type=int, metavar="ID", help="one workflow run by id, with its failed jobs (not tied to a PR head)")
+    parser.add_argument("--runs", action="store_true", help="list recent workflow runs, newest first (filters: --branch --event --sha --limit)")
+    parser.add_argument("--branch", help="with --runs: head branch")
+    parser.add_argument("--event", help="with --runs: trigger event, e.g. push, issue_comment")
+    parser.add_argument("--sha", help="with --runs: head sha")
+    parser.add_argument("--limit", type=int, default=None, help="with --runs: max runs 1-100 (default 10)")
+    parser.add_argument("-R", "--repo", help="owner/repo (default: cwd origin remote)")
+    parser.add_argument("--json", action="store_true", help="one JSON object per line")
+    parser.add_argument("--wait", choices=CONDITIONS, metavar="COND", help="poll until: " + ", ".join(CONDITIONS))
+    parser.add_argument("--interval", type=parse_duration, help="fixed poll seconds (default backoff 30s to 2m)")
+    parser.add_argument("--findings", nargs="?", const="open", choices=("open", "all"),
+                        help="print reviewer inline threads (bodies, path:line, url): open (default) or all")
+    parser.add_argument("--failures", action="store_true", help="print extracted failure lines of failed checks on the current head")
+    parser.add_argument("--max-lines", type=int, default=60, help="max failure lines per job with --failures (default 60)")
+    parser.add_argument("--body-limit", type=int, default=900, help="max chars per finding body (default 900)")
+    parser.add_argument("--timeout", type=parse_duration, default=7200, help="wait limit, e.g. 90, 10m, 2h (default 2h)")
+    args = parser.parse_args()
+    args.limit_given = args.limit is not None
+    if args.limit is None:
+        args.limit = 10
+    if args.run is not None or args.runs:
+        if args.run is not None and args.runs:
+            parser.error("--run and --runs are mutually exclusive")
+        if args.prs or args.wait or args.findings:
+            parser.error("--run/--runs cannot be combined with PR arguments, --wait or --findings")
+        if not args.runs and (args.branch or args.event or args.sha or args.limit_given):
+            parser.error("--branch/--event/--sha/--limit require --runs")
+        if args.runs and args.failures:
+            parser.error("--failures applies to --run, not --runs")
+        if args.sha:
+            args.sha = args.sha.lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", args.sha):
+                parser.error("--sha must be the full 40-hex commit sha")
+        if not 1 <= args.limit <= 100:
+            parser.error("--limit must be between 1 and 100")
+    elif args.branch or args.event or args.sha or args.limit_given:
+        parser.error("--branch/--event/--sha/--limit require --runs")
+    elif not args.prs:
+        parser.error("PR argument required (or --run/--runs)")
+    try:
+        if args.run is not None or args.runs:
+            repo = args.repo or default_repo()
+            if args.run is not None:
+                return print_run(repo, args.run, args.failures, args.max_lines, args.json)
+            return list_runs(repo, args.branch, args.event, args.sha, args.limit, args.json)
+        targets = [parse_target(p, args.repo) for p in args.prs]
+        if args.failures:
+            return max(print_failures(repo, number, args.max_lines) for repo, number in targets)
+        if args.findings:
+            for repo, number in targets:
+                print_findings(repo, number, args.findings, args.body_limit)
+            return 0
+        if args.wait:
+            return wait(targets, args.wait, args)
+        emit(snapshot(targets, runs=True), args.json)
+        return 0
+    except PrError as exc:
+        print(f"pr-state: {exc}", file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
+    except BrokenPipeError:
+        sys.exit(0)

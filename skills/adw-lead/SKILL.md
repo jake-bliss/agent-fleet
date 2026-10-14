@@ -61,6 +61,12 @@ epic). The first mate talks to you, not your crew, about this epic; you own what
 ## The loop
 Every invocation FIRST: `adw-status lead <epic>`, then `adw-lead-state reconcile <epic>` (GitHub is
 truth for PR/merge state; `graph.json` is the plan). New epics walk 1→3; later runs resume mid-DAG.
+**Paused** (`reconcile` prints `** PAUSED **`; `PAUSED.json` in the epic dir; `ready` returns nothing):
+dispatch nothing and start no review/fix round. Let in-flight conductors reach a checkpoint (PR pushed,
+or work committed in its worktree), stop waiting on CI or the review bot, write where each segment
+stands in `STATUS.md`, then `adw-status waiting "epic paused" --for 7d` and end the turn. Merges the
+user already authorized may still land. Only the user pauses or resumes (`adw-lead-state pause|resume`,
+or the board buttons); on resume, reconcile and continue.
 1. **Frame** (new only) — `adw-lead-state init <epic> <repo-key> "<goal>"`; fill `plan.md` success
    criteria + scope fences; confirm the restated goal in one line before scouting.
 2. **Scout** — parallel Explore/general-purpose readers over the affected code → landscape: seams,
@@ -73,14 +79,15 @@ truth for PR/merge state; `graph.json` is the plan). New epics walk 1→3; later
    - Record `"builder": "claude" | "codex"` per segment; prefer Codex for mechanical, low-risk
      segments; overnight Codex follows `$ADW_HOME/docs/codex-overnight.md`.
    - Adversarial cut: Codex critiques (missing deps, too-big segments, wrong seams) via
-     `codex exec -C "<repo>" -s read-only "<critique prompt>" < /dev/null`.
+     `codex-review plan <repo> <plan-file>`, never a Codex plugin wrapper.
    - **STOP:** file cut + DAG + parallel/sequential shape as an `adw-ask` (approve as cut / change it
      — the user's note carries reorder, drop/add, resize), end the turn, log to `decisions.md`. No
      dispatch before approval.
 4. **Dispatch** — `adw-lead-state reconcile <epic>` marks `ready` pending segments whose deps are all
    `merged`; `adw-lead-state ready <epic>` lists dispatchable ids (`max_parallel` minus in-flight). For
    each: set status `building` and `builder`, then run `/adw <repo> <brief>` as a background
-   `general-purpose` Agent on the strongest model, all in ONE message; say in the prompt whether its
+   `adw-conductor` Agent (pin its model by full id in the agent file or the call; an alias can drift; its
+   round-1 `reviewer` stays on the strongest model), all in ONE message; say in the prompt whether its
    builder is a worker or Codex. Each returns only: PR number, worktree path, risk tier, review verdict
    + Known/deferred, any stop-early question verbatim. **Never** run a segment's `/adw` inline in the
    lead session. A subagent can't ask the user: you file each of its questions as an `adw-ask` and
