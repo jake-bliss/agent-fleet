@@ -1,0 +1,220 @@
+#!/usr/bin/env python3
+"""Claude Code spend/efficiency report from local transcripts.
+
+Usage:
+  efficiency-report                      # today (local midnight → now)
+  efficiency-report --day 2026-10-09     # one calendar day
+  efficiency-report --hours 4            # rolling window
+  efficiency-report --days 7 --by-day    # last 7 days, one line per day
+  efficiency-report --compare            # same-length window just before, side by side
+  efficiency-report --record             # append the summary to $ADW_HOME/efficiency/history.jsonl
+
+Models matching "fable" are unpriced (counted at zero cost).
+Env: ADW_HOME, EFFICIENCY_GH_USER (count PRs merged by this GitHub login), EFFICIENCY_BOT_USER (same for a PR bot login).
+"""
+import argparse, collections, datetime as dt, glob, json, os, subprocess, sys, time
+
+PRICE = {"opus": (4, 20, 0.2, 5), "sonnet": (2, 10, 0.1, 2.5), "haiku": (0.1, 0.5, 0.01, 0.125), "fable": (0, 0, 0, 0)}
+CURRENT = ("opus-5-5", "sonnet-5-5", "haiku-5-5", "fable-5-1")
+CAP = 250_000
+HISTORY = os.path.join(os.environ.get("ADW_HOME") or os.path.expanduser("~/.claude/adw"), "efficiency", "history.jsonl")
+GH_USER = os.environ.get("EFFICIENCY_GH_USER", "")
+BOT_USER = os.environ.get("EFFICIENCY_BOT_USER", "")
+HOME_PREFIX = os.path.expanduser("~").replace("/", "-") + "-"
+
+
+def price(model):
+    return next((v for k, v in PRICE.items() if k in model), PRICE["opus"])
+
+
+def ts_of(r):
+    t = r.get("timestamp")
+    return dt.datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp() if t else None
+
+
+def agent_type(f):
+    try:
+        with open(f[:-len(".jsonl")] + ".meta.json") as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return "?"
+    kind = meta.get("agentType") or "?"
+    return f"{kind}[{meta['model']}]" if meta.get("model") else kind
+
+
+def scan(start, end):
+    rows = []
+    for f in glob.glob(os.path.expanduser("~/.claude/projects/**/*.jsonl"), recursive=True):
+        try:
+            if os.path.getmtime(f) < start:
+                continue
+            fh = open(f, errors="ignore")
+        except OSError:
+            continue
+        rel = f.split("/.claude/projects/")[1]
+        project = rel.split("/")[0].replace(HOME_PREFIX, "")[:32]
+        sub = "/subagents/" in f
+        agent = agent_type(f) if sub else "main"
+        seen = set()
+        with fh:
+            for line in fh:
+                if '"assistant"' not in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("type") != "assistant":
+                    continue
+                t = ts_of(r)
+                if t is None or t < start or t >= end:
+                    continue
+                m = r.get("message") or {}
+                if m.get("id") in seen or m.get("model") in (None, "<synthetic>"):
+                    continue
+                seen.add(m.get("id"))
+                u = m.get("usage") or {}
+                i, cr, cw, o = (u.get(k, 0) or 0 for k in
+                                ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
+                pi, po, pcr, pcw = price(m["model"])
+                ctx = i + cr + cw
+                rows.append({
+                    "t": t, "project": project, "sub": sub, "model": m["model"].replace("claude-", ""),
+                    "file": os.path.basename(f)[:20], "agent": agent, "ctx": ctx,
+                    "cost": (i * pi + cr * pcr + cw * pcw + o * po) / 1e6,
+                    "reread": cr * pcr / 1e6, "capped": (min(ctx, CAP * 0.8) * pcr + i * pi + o * po) / 1e6
+                    if ctx > CAP else None,
+                })
+    return rows
+
+
+def merged_prs(author, start, end):
+    if not author:
+        return None
+    d0 = dt.datetime.fromtimestamp(start, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    d1 = dt.datetime.fromtimestamp(end, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        out = subprocess.run(["gh", "search", "prs", "--author", author, "--merged-at", f"{d0}..{d1}",
+                              "--limit", "200", "--json", "repository,number"],
+                             capture_output=True, text=True, timeout=60).stdout
+        return len(json.loads(out or "[]"))
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def summary(rows, start, end, prs=True):
+    cost = sum(r["cost"] for r in rows)
+    over = [r for r in rows if r["ctx"] > CAP]
+    stale = [r for r in rows if not any(c in r["model"] for c in CURRENT)]
+    s = {
+        "start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
+        "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
+        "cost": round(cost, 1), "turns": len(rows),
+        "cost_per_turn": round(cost / len(rows), 4) if rows else 0,
+        "reread_share": round(sum(r["reread"] for r in rows) / cost, 3) if cost else 0,
+        "sub_share": round(sum(r["cost"] for r in rows if r["sub"]) / cost, 3) if cost else 0,
+        "over_cap_turns": len(over), "over_cap_cost": round(sum(r["cost"] for r in over), 1),
+        "cap_saving_est": round(sum(r["cost"] - r["capped"] for r in over), 1),
+        "stale_model_cost": round(sum(r["cost"] for r in stale), 1),
+        "max_ctx_k": max((r["ctx"] for r in rows), default=0) // 1000,
+    }
+    if prs:
+        s["prs_merged"] = merged_prs(GH_USER, start, end)
+        s["bot_prs_merged"] = merged_prs(BOT_USER, start, end)
+        s["cost_per_pr"] = round(cost / s["prs_merged"], 1) if s["prs_merged"] else None
+    return s
+
+
+def show_summary(label, s):
+    print(f"{label}: {s['start']} → {s['end']}")
+    print(f"  ${s['cost']:.0f} · {s['turns']} turns · ${s['cost_per_turn']:.3f}/turn · max ctx {s['max_ctx_k']}k")
+    if "prs_merged" in s:
+        print(f"  PRs merged: {s['prs_merged']} (bot {s['bot_prs_merged']}) · $/PR {s['cost_per_pr']}")
+    print(f"  re-read {s['reread_share']:.0%} · subagents {s['sub_share']:.0%} · "
+          f">{CAP // 1000}k ctx: {s['over_cap_turns']} turns ${s['over_cap_cost']:.0f} (cap would save ~${s['cap_saving_est']:.0f})"
+          f" · stale models ${s['stale_model_cost']:.0f}")
+
+
+def breakdown(rows, top):
+    cost = sum(r["cost"] for r in rows) or 1
+    agg = collections.defaultdict(lambda: [0.0, 0, 0])
+    for r in rows:
+        a = agg[(r["project"], "sub" if r["sub"] else "main", r["model"])]
+        a[0] += r["cost"]; a[1] += 1; a[2] = max(a[2], r["ctx"])
+    print("\n  by project / main-sub / model:")
+    for k, v in sorted(agg.items(), key=lambda x: -x[1][0])[:top]:
+        print(f"  ${v[0]:7.1f} {v[0] / cost:4.0%} turns={v[1]:5d} maxctx={v[2] // 1000:4d}k  {k[1]:4s} {k[2]:12s} {k[0]}")
+    per = collections.defaultdict(lambda: [0.0, 0, 0, ""])
+    for r in rows:
+        p = per[(r["project"], r["file"])]
+        p[0] += r["cost"]; p[1] += 1; p[2] = max(p[2], r["ctx"]); p[3] = ("sub " if r["sub"] else "main ") + r["model"]
+    kinds = collections.defaultdict(lambda: [0.0, set()])
+    for r in rows:
+        if r["sub"]:
+            k = kinds[(r["agent"], r["model"])]
+            k[0] += r["cost"]; k[1].add(r["file"])
+    print("\n  subagents by type / model ([x] = explicit model override):")
+    for k, v in sorted(kinds.items(), key=lambda x: -x[1][0])[:top]:
+        print(f"  ${v[0]:7.1f} {v[0] / cost:4.0%} n={len(v[1]):4d}  {k[0]:28s} {k[1]}")
+    print("\n  top transcripts:")
+    for k, v in sorted(per.items(), key=lambda x: -x[1][0])[:top]:
+        print(f"  ${v[0]:6.1f} turns={v[1]:4d} maxctx={v[2] // 1000:4d}k  {v[3]:18s} {k[0]} {k[1]}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--hours", type=float)
+    g.add_argument("--day")
+    g.add_argument("--days", type=int)
+    ap.add_argument("--by-day", action="store_true")
+    ap.add_argument("--compare", action="store_true")
+    ap.add_argument("--record", action="store_true")
+    ap.add_argument("--no-prs", action="store_true")
+    ap.add_argument("--top", type=int, default=12)
+    a = ap.parse_args()
+
+    now = time.time()
+    midnight = dt.datetime.combine(dt.date.today(), dt.time()).timestamp()
+    if a.hours:
+        start, end = now - a.hours * 3600, now
+    elif a.day:
+        start = dt.datetime.fromisoformat(a.day).timestamp()
+        end = min(start + 86400, now)
+    elif a.days:
+        start, end = midnight - (a.days - 1) * 86400, now
+    else:
+        start, end = midnight, now
+
+    if a.by_day:
+        print(f"{'day':10s} {'$':>7s} {'turns':>6s} {'$/turn':>7s} {'PRs':>4s} {'$/PR':>6s} {'>cap$':>6s} {'stale$':>6s} {'maxctx':>6s}")
+        d = start
+        while d < end:
+            s = summary(scan(d, min(d + 86400, end)), d, min(d + 86400, end), prs=not a.no_prs)
+            print(f"{s['start'][:10]:10s} {s['cost']:7.0f} {s['turns']:6d} {s['cost_per_turn']:7.3f} "
+                  f"{str(s.get('prs_merged', '-')):>4s} {str(s.get('cost_per_pr', '-')):>6s} "
+                  f"{s['over_cap_cost']:6.0f} {s['stale_model_cost']:6.0f} {s['max_ctx_k']:5d}k")
+            if a.record:
+                record(s)
+            d += 86400
+        return
+
+    rows = scan(start, end)
+    s = summary(rows, start, end, prs=not a.no_prs)
+    show_summary("window", s)
+    if a.compare:
+        span = end - start
+        show_summary("previous", summary(scan(start - span, start), start - span, start, prs=not a.no_prs))
+    breakdown(rows, a.top)
+    if a.record:
+        record(s)
+
+
+def record(s):
+    os.makedirs(os.path.dirname(HISTORY), exist_ok=True)
+    with open(HISTORY, "a") as f:
+        f.write(json.dumps(s) + "\n")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

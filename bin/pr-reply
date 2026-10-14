@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Reply to a PR review thread and optionally resolve it.
+Usage: pr-reply <pr> <comment-url|comment-id|thread-node-id> "<body>" [-R owner/repo] [--resolve]
+Exit: 0 ok, 5 tool/GitHub error, 6 reply posted but resolve failed (do not retry the reply)."""
+import argparse
+import json
+import importlib.machinery
+import importlib.util
+import os
+import re
+import subprocess
+import sys
+
+
+def load_pr_state():
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "pr-state")
+    loader = importlib.machinery.SourceFileLoader("pr_state", path)
+    spec = importlib.util.spec_from_loader("pr_state", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+ps = load_pr_state()
+
+THREADS_QUERY = """query($owner:String!,$name:String!,$number:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$number){
+reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:100){pageInfo{hasNextPage endCursor} nodes{databaseId url}}}}}}}"""
+MORE_COMMENTS = "query($id:ID!,$after:String){node(id:$id){... on PullRequestReviewThread{comments(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{databaseId url}}}}}"
+RESOLVE = "mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{id isResolved}}}"
+
+
+def parse_ref(ref):
+    match = re.search(r"#(?:discussion_)?r(\d+)", ref) or re.search(r"/pulls?/comments/(\d+)", ref)
+    if match:
+        return "comment", int(match.group(1))
+    if re.fullmatch(r"\d+", ref):
+        return "comment", int(ref)
+    if re.match(r"^PRRT_", ref):
+        return "thread", ref
+    raise ps.PrError(f"cannot parse comment reference: {ref}")
+
+
+def all_threads(repo, number):
+    owner, name = repo.split("/", 1)
+    after = None
+    while True:
+        conn = ps.gh_graphql(THREADS_QUERY, {"owner": owner, "name": name, "number": number, "after": after})[
+            "repository"]["pullRequest"]["reviewThreads"]
+        yield from conn["nodes"]
+        if not conn["pageInfo"]["hasNextPage"]:
+            return
+        after = conn["pageInfo"]["endCursor"]
+
+
+def comment_ids(thread):
+    conn = thread["comments"]
+    yield from conn["nodes"]
+    while conn["pageInfo"]["hasNextPage"]:
+        conn = ps.gh_graphql(MORE_COMMENTS, {"id": thread["id"], "after": conn["pageInfo"]["endCursor"]})["node"]["comments"]
+        yield from conn["nodes"]
+
+
+def find_thread(repo, number, kind, value):
+    for thread in all_threads(repo, number):
+        if kind == "thread" and thread["id"] == value:
+            return thread
+        if kind == "comment" and any(c["databaseId"] == value for c in comment_ids(thread)):
+            return thread
+    raise ps.PrError(f"no review thread found for {value} on {repo}#{number}")
+
+
+def post_reply(repo, number, comment_id, body):
+    proc = subprocess.run(["gh", "api", "-X", "POST", f"repos/{repo}/pulls/{number}/comments/{comment_id}/replies",
+                           "-f", f"body={body}"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ps.PrError(proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "reply failed")
+    return json.loads(proc.stdout).get("html_url", "")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="pr-reply", description=__doc__)
+    parser.add_argument("pr")
+    parser.add_argument("ref")
+    parser.add_argument("body")
+    parser.add_argument("-R", "--repo")
+    parser.add_argument("--resolve", action="store_true")
+    args = parser.parse_args(argv)
+    try:
+        repo, number = ps.parse_target(args.pr, args.repo)
+        kind, value = parse_ref(args.ref)
+        thread = find_thread(repo, number, kind, value)
+        comments = thread["comments"]["nodes"]
+        if not comments:
+            raise ps.PrError("thread has no comments")
+        root = comments[0]["databaseId"]
+        url = post_reply(repo, number, root, args.body)
+    except Exception as exc:
+        print(f"pr-reply: {exc}", file=sys.stderr)
+        return 5
+    if not args.resolve:
+        print(f"replied {url}")
+        return 0
+    try:
+        if not thread["isResolved"]:
+            ps.gh_graphql(RESOLVE, {"id": thread["id"]})
+    except Exception as exc:
+        print(f"replied {url}; resolve failed: {exc}")
+        return 6
+    print(f"replied+resolved {url}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Apply merge authority to a PR: mark ready or squash-merge when the rules allow.
+Usage: pr-ship <pr> [-R owner/repo] [--dry-run] [--no-watch] [--approved-by <adw-ask id>]
+Rules come from $ADW_HOME/pr-tools.json (see config/pr-tools.example.json). With no config, or for a repo or
+author the config does not list, it refuses: merging stays the human's call.
+--approved-by waives only the review-bot gate and high-risk refusal (non-draft PRs in a repo whose "merge" is
+"bot") when the chosen option of that answered adw-ask, answered by the configured approver (default "human"),
+carries the token `ship <repo>#<number>@<head sha>` for this PR's current head; every other gate still applies.
+Title, body and note are never read.
+Exit: 0 acted/nothing to do, 3 conditions unmet or state changed (wait), 4 refused (needs the human),
+5 tool/GitHub error."""
+import argparse
+import datetime
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+
+def load_pr_state():
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "pr-state")
+    loader = importlib.machinery.SourceFileLoader("pr_state", path)
+    spec = importlib.util.spec_from_loader("pr_state", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+ps = load_pr_state()
+
+
+def repos_with(mode):
+    return {name for name, entry in (ps.CONFIG.get("repos") or {}).items()
+            if isinstance(entry, dict) and entry.get("merge") == mode}
+
+
+def bot_repos():
+    return repos_with("bot")
+
+
+def green_repos():
+    return repos_with("green")
+
+
+def our_authors():
+    authors = ps.CONFIG.get("our_authors") or []
+    return set(authors) if isinstance(authors, list) else set()
+
+
+def approver():
+    return ps.CONFIG.get("approver") or "human"
+
+
+TOKEN = re.compile(r"ship\s+([A-Za-z0-9._-]+)#([1-9]\d*)@([0-9a-f]{7,40})(?![\w-])")
+TOKEN_ANY = re.compile(r"\bship\s+\S+#\d+@", re.I)
+
+
+def ci_unmet(info):
+    ci = info["ci"]
+    unmet = []
+    if ci["total"] == 0:
+        unmet.append("CI has no checks on the current head")
+    if ci["pending"]:
+        unmet.append(f"CI has {ci['pending']} pending check(s)")
+    if ci["failed"]:
+        unmet.append("CI failed: " + ", ".join(c["name"] for c in ci["failed"]))
+    if ci.get("nonpass"):
+        unmet.append("CI has non-passing checks: " + ", ".join(ci["nonpass"]))
+    return unmet
+
+
+def load_ask(ask_id):
+    proc = subprocess.run(["adw-ask", "show", ask_id], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ps.PrError((proc.stderr.strip().splitlines() or [f"adw-ask show {ask_id} failed"])[-1])
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        raise ps.PrError(f"adw-ask show {ask_id} returned non-JSON")
+
+
+def validate_approval(ask, repo, number, info):
+    """Returns (approval, None) when the ask carries a ship token for this PR head, else (None, reason)."""
+    answer = ask.get("answer")
+    if ask.get("status") != "answered" or not answer:
+        return None, f"ask {ask.get('id')} is not answered"
+    if answer.get("by") != approver():
+        return None, f"ask {ask.get('id')} was not answered by {approver()} (by={answer.get('by')})"
+    matches = [o for o in ask.get("options") or [] if o.get("key") == answer.get("choice")]
+    if answer.get("choice") == "note" or len(matches) != 1:
+        return None, f"ask {ask.get('id')} answer matches no single option"
+    label = matches[0].get("label") or ""
+    token = TOKEN.match(label.strip())
+    if not token or len(TOKEN_ANY.findall(label)) != 1:
+        return None, f"chosen option must start with exactly one ship token (`ship {repo.split('/')[1]}#{number}@<sha>`)"
+    short, num, sha = token.groups()
+    if short != repo.split("/")[1] or int(num) != number:
+        return None, f"ship token is for {short}#{num}, not {repo.split('/')[1]}#{number}"
+    if not info["head"].startswith(sha):
+        return None, f"ship token sha {sha} does not match current head {info['head'][:7]}"
+    return {"ask": ask["id"], "choice": answer["choice"], "label": label}, None
+
+
+def log_override(phase, approval, repo, number, head):
+    path = os.environ.get("PR_SHIP_OVERRIDE_LOG") or os.path.join(
+        os.environ.get("ADW_HOME") or os.path.expanduser("~/.claude/adw"), "merge-overrides.jsonl")
+    entry = {"phase": phase, "at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "repo": repo,
+             "number": number, "head": head, **approval}
+    path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "a") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+def decide(info, repo, approval=None):
+    """Returns (action, reason): action is one of done, ready, merge, wait, refuse."""
+    if info["state"] == "merged":
+        return "done", "PR is merged; nothing to do"
+    if info["state"] != "open":
+        return "refuse", f"PR is {info['state']}, not merged"
+    if repo not in bot_repos() and repo not in green_repos():
+        return "refuse", "merge is the human's call (repo not listed in pr-tools.json)"
+    if info.get("author") not in our_authors():
+        return "refuse", f"not ours: {info.get('author') or 'unknown'}; the human's call"
+    if not info.get("default_branch") or info.get("base") != info["default_branch"]:
+        return "refuse", f"base is {info.get('base')}, not the default branch {info.get('default_branch')}; the human's call"
+    head = info["head"]
+    fp = info["bot"]
+    draft = info["draft"]
+    if repo in bot_repos():
+        if fp.get("high_risk") and not draft and not approval:
+            return "refuse", "needs the human: the review bot flagged high risk / human review required"
+        if draft:
+            unmet = ci_unmet(info)
+            if unmet:
+                return "wait", "draft stays draft: " + "; ".join(unmet)
+            return "ready", "draft with CI fully green on current head; mark ready"
+        unmet = ci_unmet(info)
+        if not approval:
+            if not fp.get("approved"):
+                unmet.append("the review bot has not approved the current head")
+            if fp.get("verdict_head") != head:
+                unmet.append("the review bot verdict is not on the current head")
+        if info["merge_state"] != "CLEAN":
+            unmet.append(f"merge state is {info['merge_state']}, not CLEAN")
+        if unmet:
+            return "wait", "; ".join(unmet)
+        if approval:
+            return "merge", f"human-approved via {approval['ask']}: {approval['label']}, CI green, CLEAN"
+        return "merge", "review bot approved current head, CI green, CLEAN"
+    unmet = ci_unmet(info)
+    if info.get("changes_requested"):
+        unmet.append("changes requested by " + ", ".join(info["changes_requested"]))
+    if draft:
+        if unmet:
+            return "wait", "draft stays draft: " + "; ".join(unmet)
+        return "ready", "draft with CI fully green; mark ready"
+    if info["merge_state"] != "CLEAN":
+        unmet.append(f"merge state is {info['merge_state']}, not CLEAN")
+    if unmet:
+        return "wait", "; ".join(unmet)
+    return "merge", "CI green and CLEAN"
+
+
+EXIT = {"done": 0, "ready": 0, "merge": 0, "wait": 3, "refuse": 4}
+EXIT_ERROR = 5
+
+
+class StateChanged(Exception):
+    pass
+
+
+def run(cmd):
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ps.PrError((proc.stderr.strip().splitlines() or [f"{cmd[:3]} failed"])[-1])
+
+
+def fetch_info(repo, number):
+    info = ps.build(repo, number)
+    for _ in range(3):
+        if info["state"] != "open" or info["merge_state"] != "UNKNOWN":
+            break
+        time.sleep(5)
+        info = ps.build(repo, number)
+    return info
+
+
+def recheck(repo, number, info, action, approval=None, ask_id=None):
+    fresh = fetch_info(repo, number)
+    if ask_id:
+        approval, why = validate_approval(load_ask(ask_id), repo, number, fresh)
+        if why:
+            raise StateChanged(f"approval no longer valid: {why}")
+    if fresh["head"] != info["head"] or decide(fresh, repo, approval)[0] != action:
+        raise StateChanged("state changed, re-run")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(prog="pr-ship", description=__doc__)
+    parser.add_argument("pr")
+    parser.add_argument("-R", "--repo")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--no-watch", action="store_true")
+    parser.add_argument("--approved-by", metavar="ASK_ID")
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return EXIT_ERROR if exc.code else 0
+    try:
+        repo, number = ps.parse_target(args.pr, args.repo)
+        info = fetch_info(repo, number)
+        tag = f"{repo.split('/')[1]}#{number}"
+        approval = None
+        if args.approved_by:
+            if repo not in bot_repos() or info["draft"]:
+                print(f"{tag} refuse: approval token not applicable here")
+                return EXIT["refuse"]
+            approval, why = validate_approval(load_ask(args.approved_by), repo, number, info)
+            if why:
+                print(f"{tag} refuse: {why}")
+                return EXIT["refuse"]
+        action, reason = decide(info, repo, approval)
+        if action in ("done", "wait", "refuse"):
+            print(f"{tag} {action}: {reason}")
+            return EXIT[action]
+        verb = {"ready": "mark ready", "merge": "squash-merge"}[action]
+        if args.dry_run:
+            print(f"{tag} dry-run: would {verb} ({reason})")
+            return 0
+        if action == "ready":
+            recheck(repo, number, info, action)
+            run(["gh", "pr", "ready", str(number), "-R", repo])
+            print(f"{tag} marked ready ({reason})")
+            return 0
+        recheck(repo, number, info, action, approval, args.approved_by)
+        if approval:
+            log_override("pending", approval, repo, number, info["head"])
+        run(["gh", "pr", "merge", str(number), "-R", repo, "--squash", "--match-head-commit", info["head"]])
+        if approval:
+            try:
+                log_override("merged", approval, repo, number, info["head"])
+            except OSError as exc:
+                print(f"pr-ship: merged but audit log write failed: {exc}", file=sys.stderr)
+            print(f"{tag} merged (human-approved via {approval['ask']}: {approval['label']})")
+        else:
+            print(f"{tag} merged ({reason})")
+        if not args.no_watch:
+            print(f"watch: pr-state {number} -R {repo} --wait deployed")
+        return 0
+    except KeyboardInterrupt:
+        return EXIT_ERROR
+    except StateChanged as exc:
+        print(f"pr-ship: {exc}", file=sys.stderr)
+        return 3
+    except Exception as exc:
+        print(f"pr-ship: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -11,10 +11,40 @@
 #
 #   review-receipt claude pass "adversarial + callsite-coverage, no findings"
 #   review-receipt codex  fail "missing tenant scope in Foo#bar"
+#   review-receipt claude pass "tenant scope miss; fixed" --found 2 --unique 1 --sev high
 #   review-receipt --show
+#   review-receipt --ledger [days]
+#
+# --found = adjudicated-real findings from this reviewer, --unique = how many of those
+# the other model missed, --sev = worst of them (high|med|low|none). Every verdict is
+# also appended to $ADW_HOME/review-ledger.jsonl, which outlives pruned worktrees.
 #
 set -euo pipefail
 case "${1:-}" in -h|--help|"") awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;; esac
+LEDGER="${ADW_HOME:-$HOME/.claude/adw}/review-ledger.jsonl"
+
+if [ "${1:-}" = "--ledger" ]; then
+  exec python3 - "$LEDGER" "${2:-14}" <<'PY'
+import collections, json, os, sys, time
+path, days = sys.argv[1], float(sys.argv[2])
+cut = time.time() - days * 86400
+agg = collections.defaultdict(lambda: collections.Counter())
+for line in open(path) if os.path.exists(path) else []:
+    try: e = json.loads(line)
+    except ValueError: continue
+    if e.get("at", 0) < cut: continue
+    c = agg[e["who"]]
+    c["verdicts"] += 1
+    if e.get("found") is None: c["untagged"] += 1; continue
+    c["tagged"] += 1; c["found"] += e["found"]; c["unique"] += e.get("unique") or 0
+    if (e.get("unique") or 0) and e.get("sev") in ("high", "med", "low"): c["unique_" + e["sev"]] += 1
+print(f"review ledger, last {days:g} days")
+for who, c in sorted(agg.items()):
+    print(f"  {who:6s} verdicts={c['verdicts']} tagged={c['tagged']} found={c['found']} unique={c['unique']} "
+          f"(reviews w/ unique high={c['unique_high']} med={c['unique_med']} low={c['unique_low']}) untagged={c['untagged']}")
+PY
+fi
+
 GITDIR=$(git rev-parse --absolute-git-dir) || exit 2
 RECEIPT="$GITDIR/adw-receipt.json"
 
@@ -25,6 +55,20 @@ fi
 WHO="${1:?usage: review-receipt <claude|codex> <pass|fail> [notes]}"
 VERDICT="${2:?usage: review-receipt <claude|codex> <pass|fail> [notes]}"
 NOTES="${3:-}"
+shift $(( $# < 3 ? $# : 3 ))
+FOUND=""; UNIQUE=""; SEV=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --found) FOUND="${2:?}"; shift 2 ;;
+    --unique) UNIQUE="${2:?}"; shift 2 ;;
+    --sev) SEV="${2:?}"; shift 2 ;;
+    *) echo "unknown flag $1" >&2; exit 2 ;;
+  esac
+done
+case "$SEV" in ""|high|med|low|none) ;; *) echo "--sev must be high|med|low|none" >&2; exit 2 ;; esac
+for n in "$FOUND" "$UNIQUE"; do case "$n" in ""|*[!0-9]*) [ -z "$n" ] || { echo "--found/--unique take integers" >&2; exit 2; } ;; esac; done
+REPO=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
 case "$WHO" in claude|codex) ;; *) echo "reviewer must be claude or codex" >&2; exit 2 ;; esac
 case "$VERDICT" in pass|fail) ;; *) echo "verdict must be pass or fail" >&2; exit 2 ;; esac
 
@@ -33,9 +77,16 @@ BASE=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || 
 MB=$(git merge-base "$BASE" HEAD 2>/dev/null || true)
 PATCH_ID=""; [ -n "$MB" ] && PATCH_ID=$(git diff --raw --no-abbrev --no-renames "$MB" HEAD | git hash-object --stdin)
 
-python3 - "$RECEIPT" "$HEAD_SHA" "$WHO" "$VERDICT" "$NOTES" "$GITDIR/adw-review-history.json" "$PATCH_ID" <<'PY'
+python3 - "$RECEIPT" "$HEAD_SHA" "$WHO" "$VERDICT" "$NOTES" "$GITDIR/adw-review-history.json" "$PATCH_ID" \
+  "$LEDGER" "$REPO" "$BRANCH" "$FOUND" "$UNIQUE" "$SEV" <<'PY'
 import json, os, sys, time
 path, sha, who, verdict, notes, hist_path, patch_id = sys.argv[1:8]
+ledger, repo, branch, found, unique, sev = sys.argv[8:14]
+os.makedirs(os.path.dirname(ledger), exist_ok=True)
+with open(ledger, "a") as f:
+    f.write(json.dumps({"at": int(time.time()), "repo": repo, "branch": branch, "sha": sha, "who": who,
+                        "verdict": verdict, "found": int(found) if found else None,
+                        "unique": int(unique) if unique else None, "sev": sev or None, "notes": notes}) + "\n")
 hist = []
 if os.path.exists(hist_path):
     try: hist = json.load(open(hist_path))

@@ -25,6 +25,10 @@ adw-ask new --title "<one line>" --epic <slug> --body-file /tmp/<id>.md \
   30m) — unanswered by then, the recommendation is applied and reaches you as a normal answer.
   **Never** for product/scope calls, merges, anything irreversible, money, auth or customer data.
 - Only works inside a herdr pane (`HERDR_PANE_ID` set); elsewhere ask in chat.
+- A merge you cannot make on your own (a `"merge": "bot"` repo where the bot has not approved) goes out as a
+  decision whose merge option starts with the token `ship <repo>#<n>@<head sha>`. When that option is
+  chosen, `pr-ship <pr> --approved-by <ask-id>` performs the merge; any later push voids the approval. `"merge": "green"` repos need no approval (`pr-ship` merges once
+  CI is green); repos absent from `pr-tools.json` are refused.
 
 ## Declare long-running state with `adw-status`
 
@@ -41,6 +45,22 @@ Use it in any tab running multi-step work: `waiting` right before ending a turn 
 review bot, subagents or a person; `done` / `failed` when the work ends. A tab that reported once and
 then stops without a new report shows as **stopped silent**; a wait past its deadline shows as
 **overdue**. Plain chat tabs that never call it are left alone.
+
+## Tools, not hand-rolled pipelines
+
+Use the purpose-built command instead of re-deriving the same shell pipeline each time. They print
+only what you need, which keeps context small, and they enforce the safe form.
+
+- `pr-state <pr>` shows CI, review-bot and merge state; `pr-state <pr> --wait ci|ci-green|bot|approved|merged|deployed`
+  (backgrounded) replaces sleep loops; `--findings` lists the bot's inline threads, `--failures` the
+  failed CI jobs. `--wait deployed` exits 2 when a deploy failed (escalate) and 4 when no deploy ran or it was
+  cancelled/superseded (check the default branch's latest deploy covers the commit; not an escalation).
+- `pr-reply <pr> <comment-url|comment-id|thread-id> "<body>" [--resolve]` answers a review thread; `pr-ship <pr>` squash-merges only when
+  the merge rules in `$ADW_HOME/pr-tools.json` hold, and refuses everything without that file.
+- `codex-review diff|plan|ask` runs the second-model review with the contract and lenses attached.
+- `efficiency-report` shows where the context spend went.
+
+The `tool-adoption` hook (`docs/hooks.md`) denies the raw form of these and names the tool.
 
 ## Context discipline — the bill is context × turns
 
@@ -122,19 +142,22 @@ already known locally, never to discover it. Before any branch is pushed:
 
 ```bash
 ci-preflight                                       # the repo's own PR CI, run locally, in CI's order
-review-receipt claude pass "<what the reviewer found>"
+review-receipt claude pass "<what the reviewer found>" --found 2 --unique 1 --sev med
 review-receipt codex  pass "<what Codex found>"
 git push                                           # the pre-push hook verifies all three
 ```
+
+(`--found`, `--unique` and `--sev` feed a review ledger: adjudicated-real findings, how many the other
+model missed, worst severity. `review-receipt --ledger` summarises it.)
 
 The hook blocks the push unless local CI is green on the exact SHA, Codex passed the exact SHA, and
 the Claude review passed this SHA or an ancestor of it. `--quick` runs give `partial`, which the hook
 rejects. Repos whose full suite is too slow to run locally can set `gate_tier: "fast"`: the local
 gate runs the fast jobs (`fast-green`), the full suite runs on GitHub against a **draft** PR, and the
-PR is marked ready only when GitHub CI is green on that head; `ci-preflight --full` still runs
-everything. Details: `docs/ci-gate.md` in the adw repo.
+PR is marked ready only when GitHub CI is green on that head; `--full` is refused for such a repo.
+Details: `docs/ci-gate.md` in the adw repo.
 
-`--no-verify` is acceptable only when the diff touches nothing CI checks, when the branch is a pure
+`--no-verify`: decide, don't ask, and name the case. It is acceptable only when the diff touches nothing CI checks, when the branch is a pure
 revert of commits already on the default branch, or when CI is green and the reviews are recorded but
 the hook still blocks (a tooling fault — fix it afterwards). Never past a red preflight or a missing
 review.
@@ -166,10 +189,17 @@ rounds it cannot approve. Not approved after 3 rounds → ask me with what is op
 **Merge authority:** the bot approved the current head + CI green + merge state `CLEAN` → squash-merge
 without asking, then watch the deploy. Everything else is my call. In repos without a bot, I approve.
 
-## Codex invocation — the two traps
+## Codex invocation
 
-- Always redirect stdin: `codex exec ... < /dev/null`, or it blocks forever with no output.
-- Always pass `-C <absolute worktree path>` so it runs in the right root.
+Use `codex-review diff|plan|ask`, which has the two traps built in. A raw `codex exec` is for building
+only, and then always redirect stdin (`< /dev/null`, or it blocks forever with no output) and pass
+`-C <absolute worktree path>` so it runs in the right root. Never route Codex through a plugin wrapper.
+
+## Pin subagent models by full id
+
+A model alias (`sonnet`) can drift to a different model between releases. Pin the full model id in the
+agent file or the call for anything long-running, and let the `model-pin` hook (`docs/hooks.md`) refuse
+an alias where you have decided one must not be used.
 
 ## Worktrees
 

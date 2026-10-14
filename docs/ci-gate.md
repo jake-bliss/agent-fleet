@@ -45,7 +45,8 @@ For a large repo whose remote CI already runs the full suite on every push, runn
 
 - A bare `ci-preflight` runs only the jobs not marked `slow` (lint, security scans, typecheck), always locally, and records `fast-green`.
 - The hook accepts `fast-green` only for a repo whose config says `gate_tier: fast`. Anywhere else it is refused like `partial`.
-- `ci-preflight --full` runs every job, slow ones included, on the repo's `default_host` if it has one and locally otherwise. Use it when you want the whole suite before pushing: a risky migration, a change remote CI is slow to report on, or an investigation.
+- `ci-preflight --full` is refused for a fast-tier repo: the full suite runs remotely against the draft PR. For a repo without `gate_tier: fast` it runs every job, slow ones included, on the repo's `default_host` if it has one and locally otherwise.
+- A normal run also warns when the repo's workflows have drifted from `ci-parity.json`; `ci-preflight --audit` compares them against `origin/<base_branch>`.
 
 The slow jobs still run before anyone reviews the PR; they just run remotely, against a draft:
 

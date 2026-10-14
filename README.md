@@ -23,10 +23,11 @@ merged PR without being supervised turn by turn — and who want one place to se
   plain `git worktree add`, and `--launchd` is macOS-only
 - Python 3.11+ (stdlib only)
 - git, the GitHub CLI (`gh`), herdr, Claude Code
-- Claude Code subagents named `worker` (builds in a given worktree) and `reviewer` (read-only defect
-  hunt); the skills dispatch them by name, so define your own in `~/.claude/agents/` (an example
-  `worker` is in `agents/worker.md`)
-- Codex CLI — optional, but the cross-model review assumes it
+- Claude Code subagents named `worker`, `reviewer`, `codex` and `adw-conductor`; the skills dispatch them
+  by name, so copy or link the examples in `agents/` into `~/.claude/agents/`
+- Codex CLI — optional, but the cross-model review assumes it (`codex-review` also needs `gtimeout` or `timeout`)
+- `$ADW_HOME/pr-tools.json` (from `config/pr-tools.example.json`) for the PR tools. Without
+  it `pr-ship` refuses every merge
 - Tailscale — optional, to reach the board from your phone and other devices (setup in `docs/board.md`)
 
 ## Quick start
@@ -38,6 +39,7 @@ git clone <this repo> ~/src/adw && cd ~/src/adw
                                 # and docs/ into it, and copies example configs
 $EDITOR ~/.claude/adw/manifest.json   # list your repos: path, base branch, verify commands
 $EDITOR ~/.claude/adw/ci-parity.json  # each repo's CI jobs, mirrored by ci-preflight
+$EDITOR ~/.claude/adw/spawned-settings.json  # settings passed to agents the board launches (from config/spawned-settings.example.json)
 adw-board --serve 4518          # or ./install.sh --launchd to keep it running
 ```
 
@@ -61,10 +63,15 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `skills/first-mate/`, `skills/continue/` | the fleet overseer tab, and jumping to one board item |
 | `board/` | the ADW Board, `adw-ask` (decision queue), `adw-status` (tab state) |
 | `bin/` | `cow-worktree`, `ci-preflight`, `review-receipt`, the pre-push gate, `adw-lead-state`, pruning |
+| `bin/pr-state`, `pr-ship`, `pr-reply` | PR CI/review/merge state, rule-gated merge, review-thread replies; configured by `$ADW_HOME/pr-tools.json` |
+| `bin/codex-review`, `efficiency-report` | second-model review, context-spend report |
+| `hooks/` | `tool-adoption`, `model-pin`, `cross-model-review` Claude Code hooks, and herdr's state hook; see `docs/hooks.md` |
+| `tests/` | `test_pr_tools.py` |
 | `review/` | the shared review contract and the lenses reviewers apply |
 | `config/` | example configs, copied into `$ADW_HOME` by the installer |
 | `launchd/` | the board's launchd template |
-| `agents/worker.md` | an example worktree-confined builder subagent |
+| `agents/` | example subagents: `worker`, `reviewer`, `codex`, `adw-conductor` |
+| `docs/hooks.md` | what each hook does and the `settings.json` snippet to register them |
 | `docs/way-of-working.md` | the whole method in two pages — start here |
 | `docs/board.md` | the fleet layer: board, decisions, status, first mate |
 | `docs/ci-gate.md` | local CI parity and the pre-push gate |

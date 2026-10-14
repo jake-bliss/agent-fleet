@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: ./install.sh [--launchd]
 #   Installs adw into ADW_HOME (default $HOME/.claude/adw), puts its commands on PATH via
-#   ~/.local/bin, and links its skills into ~/.claude/skills. Safe to re-run.
+#   ~/.local/bin, links its skills into ~/.claude/skills, and links hooks/ into ADW_HOME (hooks are
+#   never registered for you). Safe to re-run.
 #   --launchd  also render and load a launchd agent that keeps the ADW Board running (macOS).
 #   Env: ADW_HOME, ADW_BIN_DIR (default ~/.local/bin), ADW_LAUNCHD_LABEL (default com.example.adw-board).
 set -euo pipefail
@@ -16,7 +17,7 @@ want_launchd=0
 for arg in "$@"; do
   case "$arg" in
     --launchd) want_launchd=1 ;;
-    -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n "2,7p" "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -33,13 +34,17 @@ link() {
       ;;
   esac
   if [ -L "$dest" ]; then
-    if [ "$(readlink "$dest")" = "$src" ]; then
+    local cur
+    cur="$(readlink "$dest")"
+    if [ "$cur" = "$src" ]; then
       return 0
     fi
-    ln -sfn "$src" "$dest"
-    note "relinked $dest -> $src"
+    case "$cur" in
+      "$REPO"/*) ln -sfn "$src" "$dest"; note "relinked $dest -> $src" ;;
+      *) note "SKIPPED $dest (exists, not ours)" ;;
+    esac
   elif [ -e "$dest" ]; then
-    note "SKIPPED $dest: exists and is not a symlink (move it aside to let adw manage it)"
+    note "SKIPPED $dest (exists, not ours)"
   else
     ln -s "$src" "$dest"
     note "linked $dest -> $src"
@@ -58,6 +63,7 @@ mkdir -p "$ADW_HOME/epics"
 echo "commands -> $BIN_DIR"
 for f in "$REPO"/bin/*; do
   [ -f "$f" ] || continue
+  case "$f" in *.bak-*|*.pyc) continue ;; esac
   chmod +x "$f"
   link "$f" "$BIN_DIR/$(basename "$f")"
 done
@@ -90,6 +96,7 @@ echo "engine -> $ADW_HOME"
 link "$REPO/review" "$ADW_HOME/review"
 link "$REPO/board" "$ADW_HOME/board"
 link "$REPO/docs" "$ADW_HOME/docs"
+link "$REPO/hooks" "$ADW_HOME/hooks"
 
 echo "config -> $ADW_HOME"
 for f in "$REPO"/config/*.example.json; do
@@ -103,6 +110,9 @@ for f in "$REPO"/config/*.example.json; do
     note "created $dest (edit it)"
   fi
 done
+
+echo "hooks -> $ADW_HOME/hooks (not registered; adw never edits ~/.claude/settings.json)"
+note "register them yourself: see $ADW_HOME/docs/hooks.md for the settings.json snippet"
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;

@@ -111,6 +111,11 @@ adw_status = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(adw_status)
 
 LAUNCH_ARGS = shlex.split(os.environ.get("ADW_LAUNCH_ARGS", "--dangerously-skip-permissions"))
+SPAWNED_SETTINGS = ADW_HOME / "spawned-settings.json"
+
+
+def launch_args():
+    return [*LAUNCH_ARGS, "--settings", str(SPAWNED_SETTINGS)] if SPAWNED_SETTINGS.is_file() else list(LAUNCH_ARGS)
 WAIT_GRACE = 15 * 60
 WAIT_MAX = 120 * 60
 RESUMED_SLACK = 90
@@ -185,6 +190,10 @@ def load_epic(d):
             tokens.add(s["worktree"])
     done = d / "COMPLETE.json"
     try:
+        paused = json.loads((d / "PAUSED.json").read_text())
+    except (OSError, ValueError):
+        paused = None
+    try:
         lead = json.loads((d / "lead.json").read_text())
     except (OSError, ValueError):
         lead = None
@@ -194,6 +203,7 @@ def load_epic(d):
         "epic": d.name,
         "completed_at": json.loads(done.read_text()).get("completed_at") if done.exists() else None,
         "repo": g.get("repo"),
+        "paused": paused,
         "max_parallel": g.get("max_parallel"),
         "mtime": latest_mtime(d),
         "counts": {k: len(v) for k, v in by.items()},
@@ -295,6 +305,20 @@ def context_tokens(sid):
     return None
 
 
+_MATE_SIDS = {}
+
+
+def is_mate_session(sid):
+    if sid not in _MATE_SIDS:
+        hit = False
+        for path in (Path.home() / ".claude/projects").glob(f"*/{sid}.jsonl"):
+            with open(path, "rb") as f:
+                hit = b"<command-name>/first-mate</command-name>" in f.read(4194304)
+            break
+        _MATE_SIDS[sid] = hit
+    return _MATE_SIDS[sid]
+
+
 def last_active(agent, sid):
     if not sid:
         return None
@@ -373,18 +397,32 @@ def build(args):
             continue
         e = load_epic(d)
         if e and e["completed_at"]:
-            completed.append({"epic": e["epic"], "repo": e["repo"], "completed_at": e["completed_at"]})
+            rep = d / "REPORT.json"
+            try:
+                r = json.loads(rep.read_text()) if rep.exists() else {}
+            except ValueError:
+                r = {}
+            completed.append({"epic": e["epic"], "repo": e["repo"], "completed_at": e["completed_at"],
+                              "report": {k: r.get(k) for k in ("active_days", "held_days", "prs_merged", "segments",
+                                                               "cycle_h_median", "fp_rounds_median", "user_decisions",
+                                                               "spend_usd", "usd_per_pr")} if r else None})
         elif e and (args.all or e["mtime"] >= cutoff):
             epics.append(e)
     epics.sort(key=lambda e: -e["mtime"])
     agents = None if args.no_herdr or not shutil.which("herdr") else load_agents(epics)
+    held = {e["epic"] for e in epics if e["paused"]}
+    for a in agents or []:
+        if a.get("epic") in held and a.get("watch") and a["watch"]["state"] in ("stopped-silent", "overdue", "waiting"):
+            a["watch"]["state"] = "paused"
     since = time.time() - ANSWERED_SHOWN_HOURS * 3600
     decisions = [d for d in asks.all_asks()
                  if d["status"] == "open" or (d.get("answer") or {}).get("at", 0) >= since]
     return {"generated": int(time.time()), "epics": epics, "agents": agents, "decisions": decisions,
             "ask_fresh_hours": ASK_FRESH_HOURS, "snoozes": load_snoozes(), "no_herdr": args.no_herdr,
             "completed": sorted(completed, key=lambda c: -c["completed_at"]),
-            "mate": mate_digest()}
+            "mate": mate_digest(),
+            "mate_pane": next((a["pane"] for a in agents or [] if a["kind"] == "claude" and a["session"]
+                               and is_mate_session(a["session"])), None)}
 
 
 def seg_list(segs):
@@ -467,6 +505,11 @@ RECONCILE = (
 )
 
 
+PAUSE_MSG = ("[adw-board] The user put this epic ON HOLD (PAUSED.json). Dispatch nothing new. Let in-flight /adw conductors "
+             "reach a checkpoint (PR pushed or work committed in its worktree), stop any waiting on CI or the review bot, "
+             "update STATUS.md with where each segment stands, then `adw-status waiting \"epic paused\" --for 7d` and end the turn.")
+RESUME_MSG = ("[adw-board] The user RESUMED this epic. Run `adw-lead-state reconcile <epic>`, re-read STATUS.md, and continue from the "
+              "dispatch step.")
 _ws_cache = {"at": 0, "data": []}
 
 
@@ -511,7 +554,7 @@ def launch(body):
     err = None
     for _ in range(4):
         r = subprocess.run(["herdr", "agent", "start", name, "--kind", "claude", "--pane", pane, "--timeout", "45000",
-                            "--", *LAUNCH_ARGS], capture_output=True, text=True, timeout=60)
+                            "--", *launch_args()], capture_output=True, text=True, timeout=60)
         if r.returncode == 0:
             err = None
             break
@@ -653,8 +696,27 @@ def serve(args):
                 if body.get("confirm") != name:
                     raise ValueError("type the epic name exactly to confirm")
                 marker.write_text(json.dumps({"completed_at": int(time.time()), "by": "adw-board"}) + "\n")
+                report = Path(__file__).resolve().parent / "epic-report.py"
+                if report.exists():
+                    subprocess.Popen([sys.executable, str(report), name, "--write"],
+                                     stdout=subprocess.DEVNULL, stderr=open(d / "REPORT.log", "w"), start_new_session=True)
             elif body.get("action") == "reopen":
                 marker.unlink(missing_ok=True)
+            elif body.get("action") in ("pause", "resume"):
+                pz = d / "PAUSED.json"
+                if body["action"] == "pause":
+                    pz.write_text(json.dumps({"paused_at": int(time.time()), "by": "adw-board",
+                                              "reason": (body.get("reason") or "").strip()[:300]}) + "\n")
+                else:
+                    pz.unlink(missing_ok=True)
+                with open(d / "HOLDS.jsonl", "a") as f:
+                    f.write(json.dumps({"event": body["action"], "at": int(time.time()), "by": "adw-board",
+                                        "reason": (body.get("reason") or "").strip()[:300]}) + "\n")
+                lead = next((a for a in json.loads(cache["body"] or b"{}").get("agents") or []
+                             if a.get("epic") == name and a.get("role") == "lead"), None)
+                if lead:
+                    asks.herdr("agent", "prompt", lead["pane"], PAUSE_MSG if body["action"] == "pause" else RESUME_MSG)
+                return {"ok": True, "lead_told": bool(lead)}
             else:
                 raise ValueError("unknown action")
             return {"ok": True}
@@ -722,6 +784,8 @@ def mate_events(b):
             ev[f"refresh:{a['session']}"] = (f"refresh {a['pane']} session {a['session']} [lead of {a['epic']}] at {a['context'] // 1000}k context, "
                                              f"waiting with nothing in flight in-tab :: {w['text']}")
     for e in b["epics"]:
+        if e.get("paused"):
+            continue
         live_segs = e["counts"].get("building", 0) + e["counts"].get("pr-open", 0)
         if e.get("lead") and not e.get("lead_pane") and live_segs and b.get("agents") is not None:
             ev[f"leaderless:{e['epic']}:{e['lead']['session']}"] = (

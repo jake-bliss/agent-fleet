@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# The one way to run a Codex review: contract + lenses piped into the read-only `codex exec`,
+# full transcript to a file outside the worktree, a short verdict on stdout.
+# Env: ADW_HOME, CODEX_REVIEW_TIMEOUT, CODEX_REVIEW_TENANT_PATTERN (diff lines matching it add the
+# cross-tenant-isolation lens; default "tenant"), CODEX_REVIEW_CONTRACT / _LENSES / _SCHEMA (paths).
+set -euo pipefail
+
+self_dir() {
+  local s="${BASH_SOURCE[0]}" d
+  while [ -L "$s" ]; do
+    d=$(cd "$(dirname "$s")" && pwd); s=$(readlink "$s")
+    case "$s" in /*) ;; *) s="$d/$s" ;; esac
+  done
+  cd "$(dirname "$s")" && pwd
+}
+SELF_DIR="$(self_dir)"
+ADW_HOME="${ADW_HOME:-$HOME/.claude/adw}"
+CONTRACT="${CODEX_REVIEW_CONTRACT:-$ADW_HOME/review/review-contract.md}"
+LENS_DIR="${CODEX_REVIEW_LENSES:-$ADW_HOME/review/lenses}"
+SCHEMA="${CODEX_REVIEW_SCHEMA:-$SELF_DIR/../config/codex-review.schema.json}"
+TENANT_PATTERN="${CODEX_REVIEW_TENANT_PATTERN:-tenant|company_id|account_id|org(anization)?_id|workspace_id}"
+TIMEOUT="${CODEX_REVIEW_TIMEOUT:-30m}"
+
+usage() {
+  cat >&2 <<'USAGE'
+usage:
+  codex-review diff <worktree> [--base origin/main] [--since <sha>] [--lens name ...] [--focus "<text>"]
+                    [--model M] [--effort E] [--timeout 30m] [-o out.md]
+  codex-review plan <repo-dir> <plan-file> [--focus "<text>"] [--model M] [--effort E] [--timeout 30m] [-o out.md]
+  codex-review ask  <dir> "<prompt>" [--model M] [--effort E] [--timeout 30m] [-o out.md]
+exit: 0 pass, 1 findings/fail, 2 infra error
+USAGE
+  exit 2
+}
+die() { echo "codex-review: $*" >&2; exit 2; }
+
+MODE="${1:-}"; [ -n "$MODE" ] || usage
+shift
+case "$MODE" in diff|plan|ask) ;; *) usage ;; esac
+
+DIR_ARG="${1:-}"; [ -n "$DIR_ARG" ] || usage
+shift
+POS2=""
+if [ "$MODE" != diff ]; then POS2="${1:-}"; [ -n "$POS2" ] || usage; shift; fi
+
+BASE_REF="origin/main"; SINCE=""; FOCUS=""; MODEL=""; EFFORT=""; OUT=""
+LENSES=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --base) BASE_REF="${2:?}"; shift 2 ;;
+    --since) SINCE="${2:?}"; shift 2 ;;
+    --lens) LENSES+=("${2:?}"); shift 2 ;;
+    --focus) FOCUS="${2:?}"; shift 2 ;;
+    --model) MODEL="${2:?}"; shift 2 ;;
+    --effort) EFFORT="${2:?}"; shift 2 ;;
+    --timeout) TIMEOUT="${2:?}"; shift 2 ;;
+    -o|--output) OUT="${2:?}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+if [ "$MODE" != diff ] && { [ -n "$SINCE" ] || [ ${#LENSES[@]} -gt 0 ]; }; then die "--since/--lens only apply to diff mode"; fi
+
+[ -d "$DIR_ARG" ] || die "directory not found: $DIR_ARG"
+ABS="$(cd "$DIR_ARG" && pwd -P)"
+command -v codex >/dev/null || die "codex not on PATH"
+TIMEOUT_BIN="$(command -v gtimeout || command -v timeout || true)"
+[ -n "$TIMEOUT_BIN" ] || die "neither gtimeout nor timeout on PATH (brew install coreutils)"
+[ -f "$CONTRACT" ] || die "missing $CONTRACT"
+[ -f "$SCHEMA" ] || die "missing $SCHEMA"
+
+TS="$(date +%Y%m%d-%H%M%S)"
+if git -C "$ABS" rev-parse --show-toplevel >/dev/null 2>&1; then
+  REPO="$(basename "$(git -C "$ABS" rev-parse --show-toplevel)")"
+  BRANCH="$(git -C "$ABS" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$ABS" rev-parse --short HEAD)"
+else
+  REPO="$(basename "$ABS")"; BRANCH="nogit"
+fi
+BRANCH="${BRANCH//\//-}"
+[ -n "$OUT" ] || OUT="$HOME/.cache/codex-review/$REPO-$BRANCH-$MODE-$TS.md"
+mkdir -p "$(dirname "$OUT")"
+OUT="$(cd "$(dirname "$OUT")" && pwd -P)/$(basename "$OUT")"
+OUT_DIR="$(dirname "$OUT")"
+case "$OUT" in
+  "$ABS"|"$ABS"/*) die "output must live outside the reviewed directory: $OUT" ;;
+esac
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/codex-review.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT INT TERM
+PROMPT_FILE="$WORK/prompt.md"; LAST="$WORK/last.json"; STDOUT_F="$WORK/stdout.txt"; STDERR_F="$WORK/stderr.txt"
+: > "$PROMPT_FILE"
+
+lens_file() { local f="$LENS_DIR/$1.md"; [ -f "$f" ] || die "unknown lens: $1 (have: $(cd "$LENS_DIR" && ls *.md | sed 's/\.md$//' | tr '\n' ' '))"; echo "$f"; }
+
+SELECTED=()
+add_lens() { local l; for l in ${SELECTED[@]+"${SELECTED[@]}"}; do [ "$l" = "$1" ] && return 0; done; SELECTED+=("$1"); }
+
+emit_lenses() {
+  local l
+  for l in ${SELECTED[@]+"${SELECTED[@]}"}; do
+    printf '\n\n---\n## Lens: %s (read as written)\n\n' "$l"
+    cat "$(lens_file "$l")"
+  done
+}
+
+BEFORE_STATUS=""
+if [ "$MODE" = diff ]; then
+  git -C "$ABS" rev-parse --show-toplevel >/dev/null 2>&1 || die "not a git worktree: $ABS"
+  MERGE_BASE="$(git -C "$ABS" merge-base HEAD "$BASE_REF")" || die "cannot resolve merge-base for $BASE_REF in $ABS"
+  if [ -n "$SINCE" ]; then
+    git -C "$ABS" rev-parse --verify -q "$SINCE^{commit}" >/dev/null || die "cannot resolve reviewed snapshot: $SINCE"
+    FROM="$SINCE"
+  else
+    FROM="$MERGE_BASE"
+  fi
+  DIFF_FILE="$OUT_DIR/.codex-review-diff-$REPO-$TS-$$.patch"
+  trap 'rm -rf "$WORK" "$DIFF_FILE"' EXIT INT TERM
+  git -C "$ABS" --no-pager diff "$FROM..HEAD" > "$DIFF_FILE"
+  [ -s "$DIFF_FILE" ] || die "diff is empty: $FROM..HEAD"
+  CHANGED="$(git -C "$ABS" --no-pager diff --name-only "$FROM..HEAD")"
+  ADDED="$(grep -E '^\+[^+]' "$DIFF_FILE" || true)"
+  BEFORE_STATUS="$(git -C "$ABS" status --porcelain=v1)"
+  [ -z "$BEFORE_STATUS" ] || echo "codex-review: warning: worktree has uncommitted changes; only $FROM..HEAD is reviewed" >&2
+
+  add_lens adversarial-review; add_lens callsite-coverage; add_lens house-style
+  if grep -qE '^(db/(migrate/|structure\.sql|schema\.rb)|.*/db/migrate/)' <<<"$CHANGED"; then add_lens migration-lock-safety; fi
+  if grep -qiE "$TENANT_PATTERN" <<<"$ADDED"; then add_lens cross-tenant-isolation; fi
+  for l in ${LENSES[@]+"${LENSES[@]}"}; do lens_file "$l" >/dev/null; add_lens "$l"; done
+
+  if [ -n "$SINCE" ]; then
+    SCOPE="This is a DELTA round. The full change (merge base $MERGE_BASE) was already reviewed at snapshot $SINCE. Review ONLY the delta \`git diff $SINCE..HEAD\` (artifact below). Does it close the defect it targets? Then hunt regressions the fix could cause: callers, error paths, and behavior it changed beyond the targeted defect. Do not re-review unchanged parts of the branch."
+  else
+    SCOPE="This is the first review round over the full change since the merge base: \`git diff $MERGE_BASE..HEAD\`."
+  fi
+  {
+    echo "You are an independent adversarial reviewer. You did not write this change and have intentionally NOT been given its brief; infer intent from the repository and diff, then attack the implementation for concrete defects."
+    echo
+    echo "Repository: $ABS"
+    echo "Merge base: $MERGE_BASE (base ref $BASE_REF)"
+    echo "Diff artifact (read it fully first): $DIFF_FILE"
+    echo "Scope: $SCOPE"
+    echo "Changed files:"; sed 's/^/- /' <<<"$CHANGED"
+    [ -z "$FOCUS" ] || { echo; echo "Reviewer focus requested by the caller: $FOCUS"; }
+    cat <<'EOT'
+
+Read the repository's AGENTS.md and/or .claude/CLAUDE.md. Inspect callsites with read-only commands (rg, git show, cat). You are strictly read-only: do not edit, create, stage, commit, fetch, push, or open a PR.
+
+Your final message MUST be JSON matching the supplied output schema, mapped from the contract's machine-readable verdict: `verdict` is "fail" if any critical, or any important at high confidence, else "pass"; `findings` carries every finding with the contract's required fields (file, real verified line, severity, claim, scenario, confidence, fix); `not_covered` names what you could not verify; `report` is the contract's human-readable review in Markdown. A clean review has empty `findings`.
+
+# Review contract (read as written)
+
+EOT
+    cat "$CONTRACT"
+    emit_lenses
+  } > "$PROMPT_FILE"
+  TARGET="$REPO@$BRANCH diff $FROM..HEAD"
+
+elif [ "$MODE" = plan ]; then
+  PLAN="$POS2"
+  [ -f "$PLAN" ] || die "plan file not found: $PLAN"
+  PLAN="$(cd "$(dirname "$PLAN")" && pwd -P)/$(basename "$PLAN")"
+  {
+    echo "You are an independent adversarial reviewer critiquing a PLAN/BRIEF before any code is written, against the repository at $ABS. The plan file is $PLAN; read it fully, then verify its claims against the actual code (callsites, schemas, existing helpers, constraints). Find: wrong assumptions about the code, missed callsites, missing failure/idempotency/tenant-scoping handling, scope that is too large or ordered wrongly, and tests that would not catch the defect. Do not praise. You are strictly read-only."
+    [ -z "$FOCUS" ] || { echo; echo "Reviewer focus requested by the caller: $FOCUS"; }
+    cat <<'EOT'
+
+Your final message MUST be JSON matching the supplied output schema: `findings[].file` is the plan file or the repo file the finding concerns, `line` the real line (0 if the whole plan), severity per the contract (critical = plan as written will cause data loss/security/crash or cannot work), `verdict` "fail" if any critical or high-confidence important, else "pass"; `report` is a short Markdown critique.
+
+# Review contract (read as written)
+
+EOT
+    cat "$CONTRACT"
+  } > "$PROMPT_FILE"
+  TARGET="plan $PLAN vs $ABS"
+
+else
+  printf '%s\n\nYou are strictly read-only: do not edit, create, stage, commit, fetch, push, or open a PR. Repository/working directory: %s\n' "$POS2" "$ABS" > "$PROMPT_FILE"
+  TARGET="ask $ABS"
+fi
+
+ARGS=(exec -C "$ABS" -s read-only --ephemeral --color never -o "$LAST")
+[ "$MODE" = ask ] || ARGS+=(--output-schema "$SCHEMA")
+[ -z "$MODEL" ] || ARGS+=(-m "$MODEL")
+if [ -z "$EFFORT" ] && [ "$MODE" = diff ]; then EFFORT=$([ -n "$SINCE" ] && echo medium || echo high); fi
+[ -z "$EFFORT" ] || ARGS+=(-c "model_reasoning_effort=\"$EFFORT\"")
+ARGS+=(-)
+
+START=$SECONDS
+RC=0
+"$TIMEOUT_BIN" "$TIMEOUT" codex "${ARGS[@]}" < "$PROMPT_FILE" > "$STDOUT_F" 2> "$STDERR_F" || RC=$?
+ELAPSED=$((SECONDS - START))
+
+{
+  echo "# codex-review $TARGET"
+  echo
+  echo "- mode: $MODE   elapsed: ${ELAPSED}s   codex rc: $RC"
+  [ "$MODE" != diff ] || echo "- lenses: ${SELECTED[*]}"
+  echo
+  echo "## Final message"; echo
+  [ -f "$LAST" ] && cat "$LAST" || echo "(none)"
+  echo; echo "## Codex stdout"; echo; cat "$STDOUT_F"
+  echo; echo "## Codex stderr (transcript)"; echo; cat "$STDERR_F"
+  echo; echo "## Prompt"; echo; cat "$PROMPT_FILE"
+} > "$OUT"
+
+infra() {
+  echo "codex-review: INFRA ERROR: $1 (rc=$RC, ${ELAPSED}s)" >&2
+  echo "--- last 20 lines of codex stderr ---" >&2
+  tail -n 20 "$STDERR_F" >&2
+  echo "output: $OUT" >&2
+  exit 2
+}
+
+[ "$RC" -eq 0 ] || { [ "$RC" -eq 124 ] && infra "timed out after $TIMEOUT"; infra "codex exited non-zero"; }
+[ -s "$LAST" ] || infra "codex produced no final message"
+
+if [ "$MODE" = ask ]; then
+  echo "answer (${ELAPSED}s):"
+  head -n 60 "$LAST"; echo
+  [ "$(wc -l < "$LAST")" -le 60 ] || echo "... truncated"
+  echo "output: $OUT"
+  exit 0
+fi
+
+PARSED=0
+python3 -I - "$LAST" "$OUT" "$ELAPSED" "$MODE" "$ABS" <<'PY' || PARSED=$?
+import json, sys
+last, out, elapsed, mode, abs_dir = sys.argv[1:6]
+try:
+    d = json.loads(open(last).read())
+    findings = d["findings"]
+    assert d["verdict"] in ("pass", "fail")
+    for f in findings:
+        assert f["severity"] in ("critical", "important", "suggestion", "nitpick")
+except Exception as e:
+    print(f"unparsable verdict: {e}", file=sys.stderr)
+    sys.exit(3)
+order = ["critical", "important", "suggestion", "nitpick"]
+blocking = [f for f in findings if f["severity"] == "critical" or (f["severity"] == "important" and f["confidence"] == "high")]
+verdict = "fail" if blocking else "pass"
+note = "" if verdict == d["verdict"] else f" (codex said {d['verdict']}; recomputed from contract rule)"
+counts = {s: sum(1 for f in findings if f["severity"] == s) for s in order}
+findings.sort(key=lambda f: order.index(f["severity"]))
+print(f"verdict: {verdict}{note}   ({elapsed}s)")
+print("findings: " + " ".join(f"{s}={counts[s]}" for s in order))
+for f in findings[:20]:
+    claim = " ".join(f["claim"].split())
+    print(f"{f['severity']} {f['file']}:{f['line']} {claim[:200]}")
+if len(findings) > 20:
+    print(f"... {len(findings) - 20} more in output file")
+print(f"output: {out}")
+if mode == "diff":
+    if findings:
+        top = " ".join(findings[0]["claim"].split())[:100].replace('"', "'")
+        summary = f"{counts['critical']}C/{counts['important']}I/{counts['suggestion']}S/{counts['nitpick']}N; top: {top}"
+    else:
+        summary = "no findings"
+    print(f'receipt (run yourself): (cd "{abs_dir}" && review-receipt codex {verdict} "{summary}")')
+sys.exit(1 if verdict == "fail" else 0)
+PY
+case "$PARSED" in
+  0) ;;
+  1) AFTER_STATUS=""; [ "$MODE" != diff ] || AFTER_STATUS="$(git -C "$ABS" status --porcelain=v1)"
+     [ "$BEFORE_STATUS" = "$AFTER_STATUS" ] || echo "codex-review: ERROR: worktree status changed during read-only review" >&2
+     exit 1 ;;
+  *) infra "unparsable verdict" ;;
+esac
+if [ "$MODE" = diff ] && [ "$BEFORE_STATUS" != "$(git -C "$ABS" status --porcelain=v1)" ]; then
+  echo "codex-review: ERROR: worktree status changed during read-only review" >&2
+  exit 2
+fi
+exit 0
