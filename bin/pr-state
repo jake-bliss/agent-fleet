@@ -527,6 +527,8 @@ def wait(targets, cond, args):
             emit(infos, args.json)
             shown = text
             delay = args.interval or 30
+        if all(s == "met" for s in statuses) or (args.any and "met" in statuses):
+            return 0
         if "impossible" in statuses:
             return 2
         if "undeployed" in statuses:
@@ -535,8 +537,6 @@ def wait(targets, cond, args):
                 if i.get("deploy_reason"):
                     print(f"pr-state: not deployed by this commit's runs: {i['deploy_reason']}; verify", file=sys.stderr)
             return 4
-        if all(s == "met" for s in statuses):
-            return 0
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return 1
@@ -760,6 +760,7 @@ def main():
     parser.add_argument("-R", "--repo", help="owner/repo (default: cwd origin remote)")
     parser.add_argument("--json", action="store_true", help="one JSON object per line")
     parser.add_argument("--wait", choices=CONDITIONS, metavar="COND", help="poll until: " + ", ".join(CONDITIONS))
+    parser.add_argument("--any", action="store_true", help="with --wait and several PRs: return when any one meets COND (one waiter per epic)")
     parser.add_argument("--interval", type=parse_duration, help="fixed poll seconds (default backoff 30s to 2m)")
     parser.add_argument("--findings", nargs="?", const="open", choices=("open", "all"),
                         help="print reviewer inline threads (bodies, path:line, url): open (default) or all")

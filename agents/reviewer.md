@@ -40,3 +40,17 @@ confirm — escaped defects lie outside what the brief anticipated. Read the cod
 
 Exactly the format in the review contract, including the `Not covered` section and the JSON
 verdict block. Report "no findings" plainly when that is the honest result.
+
+## Verdict file (the push gate's provenance)
+
+When you reviewed a local worktree or branch, your last step writes your JSON verdict block (the
+same one, unedited) to a verdict file. This is the one write you make:
+
+```bash
+cd <worktree> && review-receipt --write-report claude --sha <the commit you reviewed> [--since <snapshot, delta rounds>] - <<'JSON'
+{"reviewer": "claude", "verdict": "...", "findings": [...]}
+JSON
+```
+
+End your reply with the `verdict file: <path>` line it prints. `review-receipt claude pass` accepts
+only that file, and only if it says pass.

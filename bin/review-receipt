@@ -2,46 +2,62 @@
 #
 # review-receipt — record that a review pass cleared the current commit.
 #
-# The pre-push gate needs a codex (second-model) review of the exact commit being
-# pushed, and a claude (first-model) review of that commit or of an earlier state
-# of the same work: an ancestor (review once, fix, have the second model review
-# the fixes) or the same diff rebased. Every verdict is appended to
-# adw-review-history.json in the git dir, which a new commit does not clear; the
-# per-commit receipt does reset.
+# The pre-push gate needs a codex review of the exact commit being pushed, and a
+# claude review of that commit or of an earlier state of the same work: an ancestor
+# (the fix loop: Opus reviews once, Codex reviews the fixes) or the same diff
+# rebased. Every verdict is also appended to adw-review-history.json, which a new
+# commit does not clear; the per-commit receipt still resets.
 #
-#   review-receipt claude pass "adversarial + callsite-coverage, no findings"
+# A `pass` must come from a real review's verdict file (--report), written by the
+# review itself: codex-review writes one beside its output; the `reviewer` agent and
+# claude-review write one with --write-report. The report must say pass and be for
+# HEAD (or the same whole diff rebased; claude also accepts an ancestor on this branch).
+# `fail` never needs a report: recording a fail is never blocked.
+#
+#   review-receipt codex  pass --report ~/.cache/codex-review/<run>.md
+#   review-receipt claude pass "tenant scope miss; fixed" --report <verdict.json> --found 2 --unique 1 --sev high
+#   review-receipt claude pass --report <opus-fail.json> --fixed-by <codex-delta>.md
 #   review-receipt codex  fail "missing tenant scope in Foo#bar"
-#   review-receipt claude pass "tenant scope miss; fixed" --found 2 --unique 1 --sev high
+#   review-receipt --write-report <claude|codex> [--sha S] [--since S] [--tool T] [--out F] [file|-]
 #   review-receipt --show
 #   review-receipt --ledger [days]
 #
+# --fixed-by: Opus said fail on an ancestor, and a passing Codex delta review
+# (codex-review --since <that sha>) of HEAD covers the fixes; records claude pass on HEAD.
 # --found = adjudicated-real findings from this reviewer, --unique = how many of those
 # the other model missed, --sev = worst of them (high|med|low|none). Every verdict is
 # also appended to $ADW_HOME/review-ledger.jsonl, which outlives pruned worktrees.
 #
 set -euo pipefail
 case "${1:-}" in -h|--help|"") awk 'NR>1 && /^#/ {sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; exit 0 ;; esac
-LEDGER="${ADW_HOME:-$HOME/.claude/adw}/review-ledger.jsonl"
+ADW_HOME="${ADW_HOME:-$HOME/.claude/adw}"
+LEDGER="$ADW_HOME/review-ledger.jsonl"
+REPORT_DIR="${ADW_REVIEW_REPORT_DIR:-$HOME/.cache/adw-reviews}"
+
+# REVIEW_RECEIPT_ENFORCE=1 refuses a pass recorded without --report; the default records it as "unverified": true.
+ENFORCE_REPORT="${REVIEW_RECEIPT_ENFORCE:-0}"
 
 if [ "${1:-}" = "--ledger" ]; then
   exec python3 - "$LEDGER" "${2:-14}" <<'PY'
-import collections, json, os, sys, time
+import collections, json, sys, time
 path, days = sys.argv[1], float(sys.argv[2])
 cut = time.time() - days * 86400
 agg = collections.defaultdict(lambda: collections.Counter())
-for line in open(path) if os.path.exists(path) else []:
+for line in open(path) if __import__("os").path.exists(path) else []:
     try: e = json.loads(line)
     except ValueError: continue
     if e.get("at", 0) < cut: continue
     c = agg[e["who"]]
     c["verdicts"] += 1
+    if e.get("unverified"): c["unverified"] += 1
     if e.get("found") is None: c["untagged"] += 1; continue
     c["tagged"] += 1; c["found"] += e["found"]; c["unique"] += e.get("unique") or 0
     if (e.get("unique") or 0) and e.get("sev") in ("high", "med", "low"): c["unique_" + e["sev"]] += 1
 print(f"review ledger, last {days:g} days")
 for who, c in sorted(agg.items()):
     print(f"  {who:6s} verdicts={c['verdicts']} tagged={c['tagged']} found={c['found']} unique={c['unique']} "
-          f"(reviews w/ unique high={c['unique_high']} med={c['unique_med']} low={c['unique_low']}) untagged={c['untagged']}")
+          f"(reviews w/ unique high={c['unique_high']} med={c['unique_med']} low={c['unique_low']}) "
+          f"untagged={c['untagged']} unverified={c['unverified']}")
 PY
 fi
 
@@ -52,55 +68,236 @@ if [ "${1:-}" = "--show" ]; then
   [ -f "$RECEIPT" ] && cat "$RECEIPT" || echo "no receipt at $RECEIPT"; exit 0
 fi
 
-WHO="${1:?usage: review-receipt <claude|codex> <pass|fail> [notes]}"
-VERDICT="${2:?usage: review-receipt <claude|codex> <pass|fail> [notes]}"
-NOTES="${3:-}"
-shift $(( $# < 3 ? $# : 3 ))
-FOUND=""; UNIQUE=""; SEV=""
+HEAD_SHA=$(git rev-parse HEAD)
+REPO=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")
+BASE=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || { git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main; } || echo origin/master)
+# Same fingerprint as prepush-gate: git's raw diff (paths, modes, blob ids) of
+# <sha>'s branch against the default branch; identifies the same change after a rebase.
+patch_id() { local mb; mb=$(git merge-base "$BASE" "$1" 2>/dev/null) || return 0
+             git diff --raw --no-abbrev --no-renames "$mb" "$1" | git hash-object --stdin; }
+export -f patch_id; export BASE
+
+if [ "${1:-}" = "--write-report" ]; then
+  shift
+  W_WHO="${1:?usage: review-receipt --write-report <claude|codex> [--sha S] [--since S] [--tool T] [--out F] [file|-]}"; shift
+  case "$W_WHO" in claude|codex) ;; *) echo "reviewer must be claude or codex" >&2; exit 2 ;; esac
+  W_SHA="$HEAD_SHA"; W_SINCE=""; W_TOOL=""; W_OUT=""; W_IN="-"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --sha) W_SHA=$(git rev-parse --verify "${2:?}^{commit}"); shift 2 ;;
+      --since) W_SINCE=$(git rev-parse --verify "${2:?}^{commit}"); shift 2 ;;
+      --tool) W_TOOL="${2:?}"; shift 2 ;;
+      --out) W_OUT="${2:?}"; shift 2 ;;
+      -) W_IN="-"; shift ;;
+      -*) echo "unknown flag $1" >&2; exit 2 ;;
+      *) W_IN="$1"; shift ;;
+    esac
+  done
+  [ -n "$W_TOOL" ] || W_TOOL=$([ "$W_WHO" = codex ] && echo codex-review || echo reviewer)
+  [ -n "$W_OUT" ] || W_OUT="$REPORT_DIR/$REPO/$W_WHO-${W_SHA:0:12}-$(date +%Y%m%d-%H%M%S)-$$.json"
+  W_PID=$(patch_id "$W_SHA")
+  W_TMP=$(mktemp); trap 'rm -f "$W_TMP"' EXIT
+  if [ "$W_IN" = "-" ]; then cat > "$W_TMP"; else cat "$W_IN" > "$W_TMP"; fi
+  mkdir -p "$(dirname "$W_OUT")"
+  python3 -I - "$W_WHO" "$W_SHA" "$W_SINCE" "$W_TOOL" "$W_OUT" "$W_PID" "$REPO" "$W_TMP" <<'PY'
+import json, os, re, sys, time
+who, sha, since, tool, out, pid, repo, src = sys.argv[1:9]
+text = open(src, errors="replace").read()
+def candidates(t):
+    yield t
+    for m in reversed(re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", t, re.S)):
+        yield m
+d = None
+for c in candidates(text):
+    try:
+        x = json.loads(c)
+    except ValueError:
+        continue
+    if isinstance(x, dict) and "verdict" in x and isinstance(x.get("findings"), list):
+        d = x; break
+if d is None:
+    print("review-receipt: no machine-readable verdict (JSON with verdict + findings) in the input", file=sys.stderr)
+    sys.exit(2)
+sevs = ("critical", "important", "suggestion", "nitpick")
+try:
+    for f in d["findings"]:
+        assert f["severity"] in sevs
+except Exception:
+    print("review-receipt: every finding needs a severity in critical|important|suggestion|nitpick", file=sys.stderr)
+    sys.exit(2)
+blocking = [f for f in d["findings"] if f["severity"] == "critical"
+            or (f["severity"] == "important" and f.get("confidence") == "high")]
+verdict = "fail" if blocking or d["verdict"] != "pass" else "pass"
+counts = {s: sum(1 for f in d["findings"] if f["severity"] == s) for s in sevs}
+findings = [{k: f.get(k) for k in ("file", "line", "severity", "confidence", "claim")} for f in d["findings"]]
+rep = {"kind": "adw-review-verdict", "who": who, "tool": tool, "repo": repo, "sha": sha,
+       "since": since or None, "patch_id": pid or None, "verdict": verdict,
+       "reviewer_said": d["verdict"], "counts": counts, "blocking": len(blocking),
+       "findings": findings, "at": int(time.time())}
+json.dump(rep, open(out, "w"), indent=2)
+print(f"verdict file: {out}")
+print(f"  {who} {verdict} for {sha[:10]}  blocking={len(blocking)}  " + " ".join(f"{s}={counts[s]}" for s in sevs))
+print(f"  receipt: review-receipt {who} {verdict} \"<notes>\" --report {out}")
+PY
+  exit $?
+fi
+
+USAGE='usage: review-receipt <claude|codex> <pass|fail> ["notes"] [--report F] [--fixed-by F] [--found N --unique N --sev S]'
+WHO="${1:?$USAGE}"
+VERDICT="${2:?$USAGE}"
+shift 2
+NOTES=""
+if [ $# -gt 0 ] && [ "${1#--}" = "$1" ]; then NOTES="$1"; shift; fi
+FOUND=""; UNIQUE=""; SEV=""; REPORT=""; FIXED_BY=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --found) FOUND="${2:?}"; shift 2 ;;
     --unique) UNIQUE="${2:?}"; shift 2 ;;
     --sev) SEV="${2:?}"; shift 2 ;;
+    --report) REPORT="${2:?}"; shift 2 ;;
+    --fixed-by) FIXED_BY="${2:?}"; shift 2 ;;
     *) echo "unknown flag $1" >&2; exit 2 ;;
   esac
 done
 case "$SEV" in ""|high|med|low|none) ;; *) echo "--sev must be high|med|low|none" >&2; exit 2 ;; esac
 for n in "$FOUND" "$UNIQUE"; do case "$n" in ""|*[!0-9]*) [ -z "$n" ] || { echo "--found/--unique take integers" >&2; exit 2; } ;; esac; done
-REPO=$(basename "$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")")
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 case "$WHO" in claude|codex) ;; *) echo "reviewer must be claude or codex" >&2; exit 2 ;; esac
 case "$VERDICT" in pass|fail) ;; *) echo "verdict must be pass or fail" >&2; exit 2 ;; esac
+[ -z "$FIXED_BY" ] || [ "$WHO" = claude ] || { echo "--fixed-by only applies to claude" >&2; exit 2; }
+[ -z "$FIXED_BY" ] || [ -n "$REPORT" ] || { echo "--fixed-by needs --report <the Opus verdict file>" >&2; exit 2; }
 
-HEAD_SHA=$(git rev-parse HEAD)
-BASE=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || { git rev-parse --verify --quiet origin/main >/dev/null && echo origin/main; } || echo origin/master)
+PATCH_ID=$(patch_id "$HEAD_SHA")
 MB=$(git merge-base "$BASE" HEAD 2>/dev/null || true)
-PATCH_ID=""; [ -n "$MB" ] && PATCH_ID=$(git diff --raw --no-abbrev --no-renames "$MB" HEAD | git hash-object --stdin)
+BRANCH_SHAS=$(git rev-list --max-count=200 ${MB:+$MB..}HEAD 2>/dev/null | tr '\n' ' ' || true)
 
 python3 - "$RECEIPT" "$HEAD_SHA" "$WHO" "$VERDICT" "$NOTES" "$GITDIR/adw-review-history.json" "$PATCH_ID" \
-  "$LEDGER" "$REPO" "$BRANCH" "$FOUND" "$UNIQUE" "$SEV" <<'PY'
-import json, os, sys, time
+  "$LEDGER" "$REPO" "$BRANCH" "$FOUND" "$UNIQUE" "$SEV" "$REPORT" "$FIXED_BY" "$ENFORCE_REPORT" "$BRANCH_SHAS" <<'PY'
+import json, os, subprocess, sys, time
 path, sha, who, verdict, notes, hist_path, patch_id = sys.argv[1:8]
-ledger, repo, branch, found, unique, sev = sys.argv[8:14]
+ledger, repo, branch, found, unique, sev, report, fixed_by, enforce, branch_shas = sys.argv[8:18]
+branch_shas = set(branch_shas.split())
+
+def refuse(msg, *more):
+    print(f"\033[31mreview-receipt: REFUSED {who} {verdict}: {msg}\033[0m", file=sys.stderr)
+    for m in more: print(f"  {m}", file=sys.stderr)
+    print(f"  Nothing recorded. A failed review is recorded with: review-receipt {who} fail \"<findings>\"", file=sys.stderr)
+    sys.exit(3)
+
+def load(p, label):
+    p = os.path.expanduser(p)
+    tries = [p] if p.endswith(".json") else []
+    tries += [p[:-3] + ".verdict.json" if p.endswith(".md") else p + ".verdict.json", p]
+    for t in tries:
+        try:
+            d = json.load(open(t))
+        except Exception:
+            continue
+        if isinstance(d, dict) and d.get("kind") == "adw-review-verdict":
+            return d, os.path.abspath(t)
+    refuse(f"{label} {p} is not a review verdict file",
+           "codex-review prints the path (output: ...); the reviewer agent / claude-review print 'verdict file: ...'.")
+
+def n_blocking(d):
+    return max(int(d.get("blocking") or 0), sum(1 for f in d.get("findings", []) if f.get("severity") == "critical"
+               or (f.get("severity") == "important" and f.get("confidence") == "high")))
+
+def says_pass(d):
+    return d.get("verdict") == "pass" and not n_blocking(d)
+
+def pid_of(d):
+    s = d.get("sha") or ""
+    if subprocess.run(["git", "cat-file", "-e", s + "^{commit}"], capture_output=True).returncode == 0:
+        return subprocess.run(["bash", "-c", 'patch_id "$1"', "_", s], capture_output=True, text=True).stdout.strip()
+    return d.get("patch_id") or ""
+
+def matches_head(d):
+    if d.get("sha") == sha: return "exact"
+    p = pid_of(d)
+    if p and patch_id and p == patch_id: return "rebase"
+    return None
+
+record_sha, via, unverified, report_path, record_pid = sha, None, False, None, patch_id
+if verdict == "pass":
+    if not report:
+        if enforce == "1":
+            refuse("no --report. A pass must come from a review's verdict file.",
+                   "codex: review-receipt codex pass --report <codex-review output .md>",
+                   "claude: review-receipt claude pass --report <verdict file the reviewer printed>")
+        bar = "!" * 78
+        print(f"\033[1;31m{bar}\nWARNING: {who} pass recorded WITHOUT a review report (unverified).\n"
+              f"Pass --report <verdict file> from the real review (REVIEW_RECEIPT_ENFORCE=1 refuses this).\n"
+              f"Flagged \"unverified\": true in {ledger}.\n{bar}\033[0m", file=sys.stderr)
+        unverified = True
+    else:
+        d, report_path = load(report, "--report")
+        if d.get("who") != who:
+            refuse(f"report is a {d.get('who')} review, not {who}", f"report: {report_path}")
+        if not says_pass(d):
+            if not fixed_by:
+                refuse(f"the review itself does not pass (verdict={d.get('verdict')}, blocking findings={n_blocking(d)})",
+                       f"report: {report_path}",
+                       "claude only: after the fixes, a passing codex-review --since <reviewed sha> of HEAD can carry it: --fixed-by <that output>")
+            c, fixed_path = load(fixed_by, "--fixed-by")
+            if c.get("who") != "codex" or not says_pass(c):
+                refuse("--fixed-by must be a passing codex review", f"fixed-by: {fixed_path}")
+            if d.get("sha") not in branch_shas or d.get("sha") == sha:
+                refuse("the failed Opus review must be of an earlier commit on this branch",
+                       f"report sha: {str(d.get('sha'))[:10]}   HEAD: {sha[:10]}")
+            if c.get("since") != d.get("sha"):
+                refuse("the codex delta must be reviewed --since the Opus-reviewed commit",
+                       f"codex since: {str(c.get('since'))[:10]}   opus sha: {str(d.get('sha'))[:10]}")
+            if not matches_head(c):
+                refuse("the codex delta review is not of HEAD",
+                       f"codex sha: {str(c.get('sha'))[:10]}   HEAD: {sha[:10]}")
+            via = "codex-delta"
+            report_path = f"{report_path} + {fixed_path}"
+        else:
+            m = matches_head(d)
+            if m == "rebase":
+                via = "rebase"
+            elif m is None:
+                if who == "claude" and d.get("sha") in branch_shas:
+                    record_sha, via, record_pid = d["sha"], "ancestor", pid_of(d)
+                else:
+                    refuse("report is for a different commit",
+                           f"report sha: {str(d.get('sha'))[:10]}   HEAD: {sha[:10]}",
+                           "codex needs this exact commit or the same whole diff rebased; re-run the review on HEAD.")
+        if not notes:
+            cnt = d.get("counts") or {}
+            notes = "report: " + " ".join(f"{k[0].upper()}={v}" for k, v in cnt.items())
+elif report:
+    report_path = os.path.abspath(os.path.expanduser(report))
+
+now = int(time.time())
 os.makedirs(os.path.dirname(ledger), exist_ok=True)
+entry = {"at": now, "repo": repo, "branch": branch, "sha": record_sha, "who": who,
+         "verdict": verdict, "found": int(found) if found else None,
+         "unique": int(unique) if unique else None, "sev": sev or None, "notes": notes,
+         "report": report_path}
+if via: entry["via"] = via
+if unverified: entry["unverified"] = True
 with open(ledger, "a") as f:
-    f.write(json.dumps({"at": int(time.time()), "repo": repo, "branch": branch, "sha": sha, "who": who,
-                        "verdict": verdict, "found": int(found) if found else None,
-                        "unique": int(unique) if unique else None, "sev": sev or None, "notes": notes}) + "\n")
+    f.write(json.dumps(entry) + "\n")
 hist = []
 if os.path.exists(hist_path):
     try: hist = json.load(open(hist_path))
     except Exception: hist = []
-hist.append({"who": who, "verdict": verdict, "sha": sha, "patch_id": patch_id,
-             "at": int(time.time()), "notes": notes})
+row = {"who": who, "verdict": verdict, "sha": record_sha,
+       "patch_id": record_pid, "at": now, "notes": notes}
+if unverified: row["unverified"] = True
+hist.append(row)
 json.dump(hist[-200:], open(hist_path, "w"), indent=2)
-d = {}
-if os.path.exists(path):
-    try: d = json.load(open(path))
-    except Exception: d = {}
-if d.get("sha") != sha:
-    d = {"sha": sha, "ci": {"status": "unknown"}, "reviews": {}}
-d.setdefault("reviews", {})[who] = {"verdict": verdict, "at": int(time.time()), "notes": notes}
-json.dump(d, open(path, "w"), indent=2)
-print(f"recorded {who}={verdict} for {sha[:10]}")
+if record_sha == sha:
+    d = {}
+    if os.path.exists(path):
+        try: d = json.load(open(path))
+        except Exception: d = {}
+    if d.get("sha") != sha:          # different commit: start clean, keep nothing stale
+        d = {"sha": sha, "ci": {"status": "unknown"}, "reviews": {}}
+    d.setdefault("reviews", {})[who] = {"verdict": verdict, "at": now, "notes": notes}
+    if unverified: d["reviews"][who]["unverified"] = True
+    json.dump(d, open(path, "w"), indent=2)
+tag = " (UNVERIFIED)" if unverified else (f" via {via}" if via else "")
+print(f"recorded {who}={verdict} for {record_sha[:10]}{tag}")
 PY

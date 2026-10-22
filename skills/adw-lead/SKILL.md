@@ -52,7 +52,8 @@ epic). The first mate talks to you, not your crew, about this epic; you own what
   file it, don't improvise the new segment.
 - **Stay short-lived.** Whenever this tab has **nothing running in-process** (no background segment
   agents, no Monitor you need) and you end a turn to wait (review bot, CI, an ask, a merge):
-  `adw-status waiting "<what>" --for <time> --refreshable`. Past the board's refresh threshold
+  `adw-status waiting "<what>" --for <time> --refreshable` (`--for` honest: 1h or more lowers the
+  refresh line, `ADW_LEAD_REFRESH_LONG_WAIT_AT`, default 80k). Past the board's refresh threshold
   (`ADW_LEAD_REFRESH_AT`, default 150k context tokens) the first mate may `/clear` this tab and start
   `/adw-lead <epic>` fresh; you resume by reconciling from disk. **Never** mark refreshable while
   segment agents run here — clearing kills them.
@@ -61,6 +62,12 @@ epic). The first mate talks to you, not your crew, about this epic; you own what
 ## The loop
 Every invocation FIRST: `adw-status lead <epic>`, then `adw-lead-state reconcile <epic>` (GitHub is
 truth for PR/merge state; `graph.json` is the plan). New epics walk 1→3; later runs resume mid-DAG.
+**Wakes.** A notification that an agent "is waiting on its own background work" is not news: end the turn at
+once, no tool calls, no text. Wait on PRs with **one** background waiter per condition, not one per PR:
+`pr-state -R <repo> <n1> <n2> … --wait <cond> --any` returns when the first gets there. On every wake run
+`adw-tick <epic>` first (reconciles; prints open segments, live PR state, open asks, holds, your last status
+and this host's waiters, changed lines marked `*`) and act from that output instead of separate
+`adw-lead-state`/`pr-state`/`adw-ask` calls.
 **Paused** (`reconcile` prints `** PAUSED **`; `PAUSED.json` in the epic dir; `ready` returns nothing):
 dispatch nothing and start no review/fix round. Let in-flight conductors reach a checkpoint (PR pushed,
 or work committed in its worktree), stop waiting on CI or the review bot, write where each segment

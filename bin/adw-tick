@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""adw-tick <epic>: everything a lead checks after a wake, in one output.
+
+Reconciled graph (open segments), live PR state for open segments plus PRs named in the lead's last
+waiting line, open asks, HOLDS, the lead's declared wait, and running preflights/reviews.
+Lines that changed since the previous tick are marked `*`; `--all` also lists merged segments.
+"""
+import collections
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ADW = Path(os.environ.get("ADW_HOME") or Path.home() / ".claude/adw")
+DONE = re.compile(r"^(merged|deployed|done|dropped|retired|superseded|cancelled|closed|invalid|executed|resolved|reclassified|split|decomposed|decided)")
+QUEUED = re.compile(r"^(pending|blocked|deferred|parked|briefed-deferred)")
+
+
+def run(cmd, timeout=60, cwd=None):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd)
+        return (r.stdout + (r.stderr if r.returncode else "")).strip()
+    except Exception as e:
+        return f"({cmd[0]} failed: {e})"
+
+
+def slug(repo_key, repos):
+    path = os.path.expanduser(repos.get(repo_key, {}).get("path", ""))
+    url = run(["git", "-C", path, "remote", "get-url", "origin"], 10)
+    m = re.search(r"github\.com[:/](.+?)(?:\.git)?$", url)
+    return m.group(1) if m else None
+
+
+def main():
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    if not args:
+        sys.exit(__doc__)
+    epic, show_all = args[0], "--all" in sys.argv
+    d = ADW / "epics" / epic
+    if not (d / "graph.json").exists():
+        sys.exit(f"no epic {epic}")
+    g = json.loads((d / "graph.json").read_text())
+    repos = json.loads((ADW / "manifest.json").read_text())["repos"]
+    out = []
+
+    st = run(["adw-lead-state", "reconcile", epic], 300).splitlines()
+    out.append("## graph")
+    counts = collections.Counter()
+    for l in st:
+        m = re.match(r"\s*\[(\S+)\s*\]", l)
+        if m and not show_all and (DONE.match(m.group(1)) or QUEUED.match(m.group(1))):
+            counts[m.group(1)] += 1
+        else:
+            out.append(l)
+    out.append("  " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())) + " (adw-tick --all lists them)")
+    r = subprocess.run(["adw-lead-state", "ready", epic], capture_output=True, text=True, timeout=60)
+    out.append("  ready: " + ((r.stdout + r.stderr).strip().replace("\n", "\n  ") or "-"))
+
+    prs = {}
+    for s in g["segments"]:
+        if s.get("pr") and not DONE.match(s.get("status", "")):
+            prs.setdefault(s.get("repo") or g["repo"], set()).add(int(s["pr"]))
+    wait = ""
+    lead = d / "lead.json"
+    if lead.exists():
+        log = ADW / "status" / f"{json.loads(lead.read_text()).get('session')}.log"
+        if log.exists():
+            lines = [l for l in log.read_text().splitlines() if l.strip()]
+            wait = lines[-1] if lines else ""
+    for n in re.findall(r"#(\d+)", wait):
+        prs.setdefault(g["repo"], set()).add(int(n))
+
+    out.append("## prs")
+    for key, nums in prs.items():
+        s = slug(key, repos)
+        if not s:
+            out.append(f"  ({key}: no repo slug)")
+            continue
+        res = run(["pr-state", "-R", s, *map(str, sorted(nums)[-10:])], 120)
+        out += ["  " + l for l in res.splitlines()]
+
+    out.append("## asks (open)")
+    try:
+        asks = [a for a in json.loads(run(["adw-ask", "list", "--json"], 30)) if a.get("epic") == epic]
+    except Exception:
+        asks = []
+    out += [f"  {a['id']} {a.get('status')} {a['title']}" for a in asks] or ["  none"]
+
+    out.append("## holds")
+    holds = d / "HOLDS.jsonl"
+    hl = holds.read_text().splitlines()[-1:] if holds.exists() else []
+    try:
+        h = json.loads(hl[0]) if hl else {}
+    except Exception:
+        h = {"event": hl[0][:160]}
+    if h and h.get("event") != "resume":
+        out.append(f"  {h.get('event')} by {h.get('by')}: {(h.get('reason') or '')[:200]}")
+    else:
+        out.append("  none active")
+
+    out.append("## lead's last status")
+    out.append("  " + (wait or "none"))
+
+    out.append("## background on this host")
+    ps = [l for l in run(["ps", "-axo", "pid=,command="], 10).splitlines()
+          if re.search(r"ci-preflight|codex-review|pr-state .*--wait", l)]
+    ps = [l for l in ps if not re.search(r"zsh -c|ps -axo|adw-tick|exec -C|node_modules", l)]
+    nums = {str(n) for v in prs.values() for n in v}
+    waits = {}
+    for l in ps:
+        if "pr-state" in l and "--wait" in l:
+            n = re.search(r"pr-state(?: -R \S+)? (\d+)", l)
+            c = re.search(r"--wait (\S+)", l)
+            if n and n.group(1) in nums:
+                waits.setdefault(n.group(1), []).append(c.group(1))
+    out += [f"  waiting on #{n}: {', '.join(c)}" + ("  (DUPLICATE waiters)" if len(c) > 1 else "") for n, c in sorted(waits.items())]
+    kinds = collections.Counter(m.group(0) for l in ps for m in [re.search(r"ci-preflight|codex-review", l)] if m)
+    out.append("  host-wide: " + (", ".join(f"{v} {k}" for k, v in kinds.items()) or "no preflight/review running"))
+
+    last = d / ".tick-last"
+    prev = set(last.read_text().splitlines()) if last.exists() else set()
+    last.write_text("\n".join(out))
+    for l in out:
+        print(l if l.startswith("##") or l in prev or not prev else "* " + l.lstrip())
+
+
+if __name__ == "__main__":
+    main()

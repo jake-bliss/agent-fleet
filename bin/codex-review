@@ -114,9 +114,10 @@ if [ "$MODE" = diff ]; then
   fi
   DIFF_FILE="$OUT_DIR/.codex-review-diff-$REPO-$TS-$$.patch"
   trap 'rm -rf "$WORK" "$DIFF_FILE"' EXIT INT TERM
-  git -C "$ABS" --no-pager diff "$FROM..HEAD" > "$DIFF_FILE"
+  HEAD_SHA="$(git -C "$ABS" rev-parse HEAD)"
+  git -C "$ABS" --no-pager diff "$FROM..$HEAD_SHA" > "$DIFF_FILE"
   [ -s "$DIFF_FILE" ] || die "diff is empty: $FROM..HEAD"
-  CHANGED="$(git -C "$ABS" --no-pager diff --name-only "$FROM..HEAD")"
+  CHANGED="$(git -C "$ABS" --no-pager diff --name-only "$FROM..$HEAD_SHA")"
   ADDED="$(grep -E '^\+[^+]' "$DIFF_FILE" || true)"
   BEFORE_STATUS="$(git -C "$ABS" status --porcelain=v1)"
   [ -z "$BEFORE_STATUS" ] || echo "codex-review: warning: worktree has uncommitted changes; only $FROM..HEAD is reviewed" >&2
@@ -194,6 +195,7 @@ ELAPSED=$((SECONDS - START))
   echo
   echo "- mode: $MODE   elapsed: ${ELAPSED}s   codex rc: $RC"
   [ "$MODE" != diff ] || echo "- lenses: ${SELECTED[*]}"
+  [ "$MODE" != diff ] || echo "- head: $HEAD_SHA   from: $FROM"
   echo
   echo "## Final message"; echo
   [ -f "$LAST" ] && cat "$LAST" || echo "(none)"
@@ -212,6 +214,8 @@ infra() {
 
 [ "$RC" -eq 0 ] || { [ "$RC" -eq 124 ] && infra "timed out after $TIMEOUT"; infra "codex exited non-zero"; }
 [ -s "$LAST" ] || infra "codex produced no final message"
+# A sandbox that cannot start leaves codex blind; its empty findings must not become a pass.
+! grep -q 'bwrap: ' "$STDERR_F" || infra "codex sandbox failed to start (bwrap); review saw nothing"
 
 if [ "$MODE" = ask ]; then
   echo "answer (${ELAPSED}s):"
@@ -221,10 +225,18 @@ if [ "$MODE" = ask ]; then
   exit 0
 fi
 
+VERDICT_FILE=""
+if [ "$MODE" = diff ]; then
+  VERDICT_FILE="${OUT%.md}.verdict.json"; [ "$VERDICT_FILE" != "$OUT" ] || VERDICT_FILE="$OUT.verdict.json"
+  ( cd "$ABS" && "$SELF_DIR/review-receipt" --write-report codex --sha "$HEAD_SHA" ${SINCE:+--since "$SINCE"} \
+      --tool codex-review --out "$VERDICT_FILE" "$LAST" >/dev/null ) \
+    || { echo "codex-review: warning: could not write the verdict file review-receipt needs" >&2; VERDICT_FILE=""; }
+fi
+
 PARSED=0
-python3 -I - "$LAST" "$OUT" "$ELAPSED" "$MODE" "$ABS" <<'PY' || PARSED=$?
+python3 -I - "$LAST" "$OUT" "$ELAPSED" "$MODE" "$ABS" "$VERDICT_FILE" <<'PY' || PARSED=$?
 import json, sys
-last, out, elapsed, mode, abs_dir = sys.argv[1:6]
+last, out, elapsed, mode, abs_dir, verdict_file = sys.argv[1:7]
 try:
     d = json.loads(open(last).read())
     findings = d["findings"]
@@ -254,7 +266,7 @@ if mode == "diff":
         summary = f"{counts['critical']}C/{counts['important']}I/{counts['suggestion']}S/{counts['nitpick']}N; top: {top}"
     else:
         summary = "no findings"
-    print(f'receipt (run yourself): (cd "{abs_dir}" && review-receipt codex {verdict} "{summary}")')
+    print(f'receipt (run yourself): (cd "{abs_dir}" && review-receipt codex {verdict} "{summary}" --report "{verdict_file or out}")')
 sys.exit(1 if verdict == "fail" else 0)
 PY
 case "$PARSED" in

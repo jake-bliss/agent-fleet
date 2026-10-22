@@ -6,6 +6,9 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -945,6 +948,205 @@ class DeployedWaitTest(unittest.TestCase):
         runs[0]["conclusion"] = "success"
         with mock.patch.object(ps, "gh_rest", lambda p: {"workflow_runs": runs}):
             self.assertEqual(ps.post_merge_runs("o/r", "abc")["deploys_ok"], 1)
+
+
+class MergeFreezeTest(unittest.TestCase):
+    def freeze(self, content):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "freeze.json")
+        if content is not None:
+            with open(path, "w") as f:
+                f.write(content)
+        return mock.patch.dict(os.environ, {"PR_SHIP_FREEZE_FILE": path})
+
+    def test_no_file_means_no_freeze(self):
+        with self.freeze(None):
+            self.assertIsNone(ship.merge_freeze("acme/app"))
+
+    def test_listed_repo_is_frozen_with_reason(self):
+        with self.freeze('{"repos": ["acme/app"], "reason": "release"}'):
+            self.assertEqual(ship.merge_freeze("acme/app"), "release")
+            self.assertIsNone(ship.merge_freeze("acme/api"))
+
+    def test_unreadable_file_freezes(self):
+        with self.freeze("{nope"):
+            self.assertEqual(ship.merge_freeze("acme/app"), "freeze file unreadable")
+
+    def test_frozen_repo_makes_no_mutation(self):
+        calls = []
+        with self.freeze('{"repos": ["acme/app"], "reason": "release"}'), \
+                mock.patch.object(ship.ps, "build", lambda r, n, runs=False: info()), \
+                mock.patch.object(ship.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or mock.Mock(returncode=0)), \
+                mock.patch("builtins.print"):
+            code = ship.main(["7", "-R", "acme/app"])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(calls, [])
+
+
+class WaitAnyTest(unittest.TestCase):
+    def run_wait(self, any_flag, merged_numbers):
+        return self.run_wait_states(any_flag, ["merged" if n in merged_numbers else "open" for n in (1, 2)])
+
+    def run_wait_states(self, any_flag, states):
+        def i(n):
+            return {"state": states[n - 1], "draft": False, "repo": "o/r", "number": n,
+                    "head": "abcdef0", "title": "t", "open_threads": 0,
+                    "ci": {"total": 1, "ok": 1, "pending": 0, "failed": []}, "bot": {"status": "n/a", "approved": False},
+                    "review_decision": None, "merge_state": None, "merge_commit": None,
+                    "post_merge": {"total": 0, "pending": 0, "deploys": 0, "deploys_pending": 0, "superseded": 0,
+                                   "deploys_ok": 0, "failed": []}}
+        args = mock.Mock(timeout=0, interval=1, json=False)
+        args.any = any_flag
+        with mock.patch.object(ps, "snapshot", lambda t, r: [i(1), i(2)]), mock.patch.object(ps.time, "sleep"), \
+                contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            return ps.wait([("o/r", 1), ("o/r", 2)], "merged", args)
+
+    def test_any_returns_when_one_met(self):
+        self.assertEqual(self.run_wait(True, {2}), 0)
+
+    def test_without_any_waits_for_all(self):
+        self.assertEqual(self.run_wait(False, {2}), 1)
+
+
+class ModelPinTest(unittest.TestCase):
+    HOOK = os.path.join(HERE, "..", "hooks", "model-pin.py")
+
+    def run_hook(self, **inp):
+        out = subprocess.run([sys.executable, self.HOOK], input=json.dumps({"tool_input": inp}),
+                             capture_output=True, text=True).stdout
+        return json.loads(out) if out.strip() else None
+
+    def test_opus_conductor_denied(self):
+        r = self.run_hook(subagent_type="adw-conductor", model="opus", description="build segment", prompt="x")
+        self.assertEqual(r["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_opus_conductor_allowed_for_redesign(self):
+        self.assertIsNone(self.run_hook(subagent_type="adw-conductor", model="opus", description="redesign segment", prompt="x"))
+
+    def test_opus_worker_denied_even_for_redesign(self):
+        r = self.run_hook(subagent_type="worker", model="opus", description="redesign", prompt="x")
+        self.assertEqual(r["hookSpecificOutput"]["permissionDecision"], "deny")
+
+
+class MachineRoutingTest(unittest.TestCase):
+    @staticmethod
+    def asks_module():
+        loader = importlib.machinery.SourceFileLoader("adw_asks", os.path.join(HERE, "..", "board", "asks.py"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+
+    @classmethod
+    def setUpClass(cls):
+        cls.asks = cls.asks_module()
+
+    def patched(self, machine=None, remotes=("node1",)):
+        a = self.asks
+        return mock.patch.multiple(a, MACHINE=machine,
+                                   REMOTE_HERDR={m: a.Path(f"/x/{m}.sock") for m in remotes})
+
+    def test_machines_from_env(self):
+        with mock.patch.dict(os.environ, {"ADW_MACHINES": "laptop, node1,bad name"}):
+            self.assertEqual(self.asks.configured_machines(), ["laptop", "node1"])
+
+    def test_default_is_single_machine(self):
+        with mock.patch.dict(os.environ, {"ADW_HOME": tempfile.mkdtemp()}):
+            os.environ.pop("ADW_MACHINES", None)
+            self.assertEqual(self.asks.configured_machines(), [])
+
+    def test_remote_pane_routes_to_socket(self):
+        with self.patched():
+            cmd, env = self.asks.herdr_cmd(["agent", "get", "node1/w1:p2"])
+        self.assertEqual(cmd, ["herdr", "agent", "get", "w1:p2"])
+        self.assertEqual(env["HERDR_SOCKET_PATH"], "/x/node1.sock")
+
+    def test_own_machine_prefix_is_local(self):
+        with self.patched(machine="node1"):
+            cmd, env = self.asks.herdr_cmd(["agent", "get", "node1/w1:p2"])
+        self.assertEqual((cmd, env), (["herdr", "agent", "get", "w1:p2"], None))
+
+    def test_pane_ref_prefixes_only_with_machine(self):
+        with self.patched(machine="node1"):
+            self.assertEqual(self.asks.pane_ref("w1:p2"), "node1/w1:p2")
+            self.assertEqual(self.asks.pane_ref("laptop/w1:p2"), "laptop/w1:p2")
+        with self.patched(machine=None):
+            self.assertEqual(self.asks.pane_ref("w1:p2"), "w1:p2")
+
+
+class ReviewFixesTest(unittest.TestCase):
+    def test_freeze_with_empty_reason_still_freezes(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "f.json")
+        with open(path, "w") as f:
+            f.write('{"repos": ["acme/app"], "reason": ""}')
+        with mock.patch.dict(os.environ, {"PR_SHIP_FREEZE_FILE": path}):
+            self.assertEqual(ship.merge_freeze("acme/app"), "frozen")
+
+    def test_any_wait_met_beats_another_prs_failure(self):
+        self.assertEqual(WaitAnyTest().run_wait_states(True, ["merged", "closed"]), 0)
+
+    def test_routing_ignores_message_text(self):
+        a = MachineRoutingTest.asks_module()
+        with mock.patch.multiple(a, MACHINE=None, REMOTE_HERDR={"node1": a.Path("/x/node1.sock")}):
+            cmd, env = a.herdr_cmd(["agent", "prompt", "w1:p2", "node1/w1:p9"])
+        self.assertEqual(cmd, ["herdr", "agent", "prompt", "w1:p2", "node1/w1:p9"])
+        self.assertIsNone(env)
+
+
+
+class EpicReportTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("EFFICIENCY_REPORT", os.path.join(HERE, "efficiency-report"))
+        loader = importlib.machinery.SourceFileLoader("adw_epic_report", os.path.join(HERE, "..", "board", "epic-report.py"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cls.er = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.er)
+
+    def test_pr_numbers_ignore_digits_in_owner_and_repo(self):
+        f = self.er.pr_numbers
+        self.assertEqual(f(42), [42])
+        self.assertEqual(f("42"), [42])
+        self.assertEqual(f("#42"), [42])
+        self.assertEqual(f("https://github.com/org2/repo3/pull/42"), [42])
+        self.assertEqual(f("#12 and #345"), [12, 345])
+        self.assertEqual(f(["#7", "https://github.com/a1/b2/pull/9"]), [7, 9])
+        self.assertEqual(f("owner/repo"), [])
+        self.assertEqual(f(None), [])
+
+    def test_born_without_birthtime_uses_oldest_file_not_rewritten_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self.er.Path(tmp)
+            plan, graph, old = d / "plan.md", d / "graph.json", d / "segments" / "s1.md"
+            old.parent.mkdir()
+            for x in (plan, graph, old):
+                x.write_text("x")
+            os.utime(old, (1000, 1000))
+            os.utime(plan, (5000, 5000))
+            os.utime(graph, (9000, 9000))
+
+            class NoBirth:
+                def __init__(self, st):
+                    self.st_mtime = st.st_mtime
+
+            real_stat = self.er.Path.stat
+            with mock.patch.object(self.er.Path, "stat", lambda self, **kw: NoBirth(real_stat(self, **kw))), \
+                    mock.patch.object(self.er.Path, "is_file", lambda self: not self.name == "segments"):
+                self.assertEqual(self.er.epic_born(d, (plan, graph)), 1000)
+
+    def test_born_prefers_birthtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self.er.Path(tmp)
+            plan = d / "plan.md"
+            plan.write_text("x")
+
+            class Birth:
+                st_birthtime = 1234
+                st_mtime = 9999
+
+            with mock.patch.object(self.er.Path, "stat", lambda self, **kw: Birth()):
+                self.assertEqual(self.er.epic_born(d, (plan,)), 1234)
 
 
 if __name__ == "__main__":

@@ -55,6 +55,20 @@ def approver():
     return ps.CONFIG.get("approver") or "human"
 
 
+def merge_freeze(repo):
+    """Reason string when merges to repo are frozen; an unreadable freeze file freezes everything."""
+    path = os.environ.get("PR_SHIP_FREEZE_FILE") or os.path.join(
+        os.environ.get("ADW_HOME") or os.path.expanduser("~/.claude/adw"), "merge-freeze.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return "freeze file unreadable"
+    return (cfg.get("reason") or "frozen") if repo in cfg.get("repos", []) else None
+
+
 TOKEN = re.compile(r"ship\s+([A-Za-z0-9._-]+)#([1-9]\d*)@([0-9a-f]{7,40})(?![\w-])")
 TOKEN_ANY = re.compile(r"\bship\s+\S+#\d+@", re.I)
 
@@ -228,6 +242,11 @@ def main(argv=None):
         if action in ("done", "wait", "refuse"):
             print(f"{tag} {action}: {reason}")
             return EXIT[action]
+        frozen = merge_freeze(repo)
+        if action == "merge" and frozen:
+            print(f"{tag} refuse: MERGE FREEZE on {repo} ({frozen}); merge-ready at head {info['head']}: "
+                  f"file or refresh the ship ask with this SHA")
+            return EXIT["refuse"]
         verb = {"ready": "mark ready", "merge": "squash-merge"}[action]
         if args.dry_run:
             print(f"{tag} dry-run: would {verb} ({reason})")

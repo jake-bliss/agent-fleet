@@ -100,7 +100,7 @@ must also:
 11. **Context hygiene.** `rg -n` plus targeted line ranges, never whole large files; long output to a
     log file with the exit code printed, cited by path; read back only failures and the summary.
 
-**Invocation.** Run from the worktree, with stdin redirected.
+**Invocation.** Run from the worktree, with stdin redirected. Never route Codex through a plugin wrapper.
 ```bash
 cd "$WT" && codex exec -C "$WT" -s workspace-write --skip-git-repo-check - < step-prompt.md
 git -C "$WT" add -A && git -C "$WT" commit -m "<type>(<scope>): <step>"     # the driver, not Codex
@@ -173,7 +173,8 @@ not push, open PRs or merge. In the morning, Claude reviews and ships.
    (`codex exec -C <wt> -s read-only "<contract + lenses> TASK: falsify <claims> in git diff origin/<base>...HEAD" < /dev/null`),
    feeds findings back to you for one fix round (fix-streak → STOP), then `ci-preflight` once on the
    final SHA (green / red:<job> / infra-red), one preflight at a time in segment order, then
-   `review-receipt codex pass "<what was checked>"`.
+   `review-receipt codex pass "<what was checked>" --report <codex-review output>` (the raw self-review
+   leaves no verdict file; run `codex-review diff` for the receipt review).
    If the sandbox blocks the local test DB in step 2, the driver runs the tests too and pastes the
    summary back.
 

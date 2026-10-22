@@ -14,9 +14,11 @@ if "# model-ok" in (inp.get("prompt") or ""):
     sys.exit(0)
 
 why = None
-if kind in ("adw-conductor", "worker") and model and "sonnet" not in model:
+redesign = kind == "adw-conductor" and "redesign" in (inp.get("description") or "").lower()
+if kind in ("adw-conductor", "worker") and model and "sonnet" not in model and not redesign:
     why = (f"{kind} is pinned to Sonnet in its agent definition; drop `model: \"{model}\"`. "
-           "Opus conductors/workers cost ~2x for the same /adw flow.")
+           "Opus conductors/workers cost ~2x for the same /adw flow. "
+           "A fix-streak redesign may use Opus: put \"redesign\" in the Agent description.")
 elif kind == "Explore" and model != "haiku":
     why = "Explore always runs with `model: \"haiku\"` (delegation rule); otherwise it inherits the orchestrator's model."
 if why:

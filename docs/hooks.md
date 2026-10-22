@@ -7,9 +7,9 @@ Claude Code hooks that make the habits in `docs/CLAUDE.snippet.md` happen every 
 | Hook | Event | Does |
 |---|---|---|
 | `tool-adoption.py` | `PreToolUse` on `Bash` | denies the raw form of a command that has a purpose-built tool (`gh pr checks`, `gh pr merge`, `sleep` loops, read-only `codex exec`, ...) and names the tool. Append `# raw-ok` plus a reason to a command to override |
-| `model-pin.py` | `PreToolUse` on `Agent` | refuses a non-Sonnet model for `worker` / `adw-conductor` and a non-haiku model for `Explore`. A `# model-ok <reason>` line in the prompt overrides |
+| `model-pin.py` | `PreToolUse` on `Agent` | refuses a non-Sonnet model for `worker` / `adw-conductor` (Opus is allowed for an `adw-conductor` whose prompt says "redesign") and a non-haiku model for `Explore`. A `# model-ok <reason>` line in the prompt overrides |
 | `cross-model-review.py` | `UserPromptSubmit` | when a prompt asks for a review or a plan critique, injects the instruction to run Claude and Codex both and adjudicate. Silent if `codex` is not installed; reads `ADW_HOME` |
-| `herdr-agent-state.sh` | session events | herdr's own integration file, shipped for reference. herdr writes and regenerates it when you install its Claude integration; prefer that over registering this copy |
+| `herdr-agent-state.sh` | session events | herdr's own integration file (v11), shipped for reference. herdr writes and regenerates it when you install its Claude integration; prefer that over registering this copy |
 
 ## settings.json
 

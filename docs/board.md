@@ -18,7 +18,7 @@ Everything lives under `$ADW_HOME` (default `~/.claude/adw`): `asks/`, `status/`
 | `adw-board --serve [PORT]` | Serve the web board on `127.0.0.1` (default port 4518). |
 | `adw-board digest` | Needs you / Trouble / Ready / Under way, as plain text. |
 | `adw-board show <id>` | Everything about one decision id, herdr pane or epic slug. |
-| `adw-board watch` | A stream: one line per new event, plus `digest-due HH:MM` (times from `ADW_MATE_DIGEST_AT`, default `09:00,16:00`). |
+| `adw-board watch` | A stream: one line per new event, plus `digest-due HH:MM` (times from `ADW_MATE_DIGEST_AT`, default `09:00,16:00`). `--once` prints the first batch of new events and exits, so it can run as a backgrounded wait that re-arms after each wake. |
 | `adw-ask` | File and answer decisions (below). |
 | `adw-status` | Declare what a tab is doing (below). |
 
@@ -131,7 +131,20 @@ Leads should stay short-lived: the epic's state lives in its files, not in the l
 on something long marks it `adw-status waiting "<what>" --refreshable`. When such a lead is idle, has nothing
 running in-tab (no background agents or shells), and its session context has passed `ADW_LEAD_REFRESH_AT` tokens
 (default 150000), `adw-board watch` emits a `refresh:<session>` event. The first mate (or you) can then replace
-it with a fresh lead that takes over with `--takeover` and picks up from the epic files.
+it with a fresh lead that takes over with `--takeover` and picks up from the epic files. A wait of an hour or
+more uses the lower `ADW_LEAD_REFRESH_LONG_WAIT_AT` (default 80000).
+
+A lead that is idle past `ADW_LEAD_COMPACT_IDLE` seconds (default 2700) with context over `ADW_LEAD_COMPACT_AT`
+tokens (default 100000) is sent `/compact` once by `adw-board watch`; `ADW_LEAD_AUTO_COMPACT=0` turns that off.
+
+### Pins, disk alert, ignored tabs
+
+- Pins: the web board's pin buttons keep chosen tabs and epics at the top (`board-pins.json` in `$ADW_HOME`, via `/api/pin`).
+- `adw-disk-check` writes `$ADW_HOME/disk.json` (`host_pct`, `host_free_g`); run it from cron or a timer. `watch` emits a
+  trouble event when `host_pct` reaches `ADW_DISK_ALERT_PCT` (default 80).
+- `ADW_MATE_IGNORE_CWDS` is a comma-separated list of cwd prefixes whose tabs stay out of the digest, `show` and `watch`.
+
+Agents on other machines can appear on the same board; see `docs/multi-machine.md`.
 
 ## Chain of command
 

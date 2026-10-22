@@ -67,7 +67,7 @@ for f in "$REPO"/bin/*; do
   chmod +x "$f"
   link "$f" "$BIN_DIR/$(basename "$f")"
 done
-for pair in "adw-board:board/board.py" "adw-ask:board/asks.py" "adw-status:board/status.py"; do
+for pair in "adw-board:board/board.py" "adw-ask:board/asks.py" "adw-status:board/status.py" "adw-epic-report:board/epic-report.py"; do
   name="${pair%%:*}"
   src="$REPO/${pair#*:}"
   if [ -f "$src" ]; then

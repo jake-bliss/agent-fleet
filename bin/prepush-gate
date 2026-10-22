@@ -33,8 +33,8 @@ fail() {
   shift; for l in "$@"; do dim "  $l"; done
   dim ""
   dim "  ci-preflight                      run the repo's CI locally"
-  dim "  review-receipt claude pass '...'  record the first-model review (carries to later fix commits)"
-  dim "  review-receipt codex  pass '...'  record the second-model review of this exact commit"
+  dim "  review-receipt claude pass '...' --report <verdict file>   record the first-model review (carries to later fix commits)"
+  dim "  review-receipt codex  pass '...' --report <codex-review output>   record the second-model review of this exact commit"
   dim "  git push --no-verify              deliberate exception (docs/ci-gate.md)"
   exit 1
 }

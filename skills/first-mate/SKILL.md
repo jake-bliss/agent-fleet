@@ -80,7 +80,11 @@ the snooze ends — don't chase them.
 ## Loop
 1. **Start:** read `notes.md` if it exists; `adw-board digest` → write `digest.md`, post a 3-line
    version in chat.
-2. **Wait:** ONE Monitor on `adw-board watch`; stay quiet. Never poll, never sleep-loop.
+2. **Wait:** ONE backgrounded Bash `adw-board watch --once` (`run_in_background`); it exits with the
+   first batch of events, so each wake is real news. Not a Monitor (30-minute expiry = a wake with no
+   news). Stay quiet. Never poll, never sleep-loop.
+   A notification that an agent "is waiting on its own background work" is not news: end the turn at once,
+   no tool calls, no text.
 3. **Each wake** (lines within a minute = one batch):
    - `needs-you` — one chat line: what, and `/continue <id>`. Don't explain it.
    - `trouble` — `adw-board show <pane>`; not yet nudged → the one check-in (Upkeep), logged. Already
@@ -90,8 +94,8 @@ the snooze ends — don't chase them.
    - `ready` — one line; update Ready.
    - `digest-due` — rebuild the digest from `adw-board digest`.
    - `watch-error` — note it; repeated → tell the user the watcher is unhealthy.
-   - **Stream ends** — start a new Monitor on `adw-board watch` at once; note it in `notes.md`. Never
-     sit without one.
+   - **Re-arm** — after handling the batch, start the next `adw-board watch --once` before ending the
+     turn. Never sit without one. Exit without events or non-zero → `watch-error` handling.
 4. Log each wake in `notes.md`: time, event, useful/noise (honest guess).
 
 ## Digest (`digest.md`, shown on the board)
