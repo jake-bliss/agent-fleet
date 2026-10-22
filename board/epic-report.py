@@ -68,7 +68,10 @@ def pr_numbers(pr):
         return [pr]
     if isinstance(pr, list):
         return [n for p in pr for n in pr_numbers(p)]
-    return [int(n) for n in re.findall(r"\d+", str(pr or ""))]
+    s = str(pr or "").strip()
+    if re.fullmatch(r"#?\d+", s):
+        return [int(s.lstrip("#"))]
+    return [int(n) for n in re.findall(r"(?:#|/pull/)(\d+)", s)]
 
 
 def iso_ts(s):
@@ -179,6 +182,15 @@ def pct(vals, q):
     return vals[min(len(vals) - 1, int(round(q * (len(vals) - 1))))] if vals else None
 
 
+def epic_born(d, files):
+    """Creation time of the epic. Linux has no st_birthtime and graph.json is rewritten on every update,
+    so there the oldest mtime of any file in the epic directory stands in for it."""
+    births = [x.stat().st_birthtime for x in files if x.exists() and hasattr(x.stat(), "st_birthtime")]
+    if births:
+        return min(births)
+    return min(x.stat().st_mtime for x in d.rglob("*") if x.is_file())
+
+
 def report(slug, with_spend=True):
     d = EPICS / slug
     g = json.loads((d / "graph.json").read_text())
@@ -190,7 +202,7 @@ def report(slug, with_spend=True):
         prs = [p for p in pool.map(lambda t: pr_facts(*t), targets) if p]
     merged = [p for p in prs if p["merged"]]
     plan = d / "plan.md"
-    born = min(getattr(x.stat(), "st_birthtime", None) or x.stat().st_mtime for x in (plan, d / "graph.json") if x.exists())
+    born = epic_born(d, (plan, d / "graph.json"))
     # PRs opened long before the plan were adopted, not built by the epic; they don't move its start.
     start = min([born] + [p["created"] for p in prs if p["created"] >= born - 14 * 86400])
     all_done = bool(segs) and all(s.get("status") in DONE | DROPPED for s in segs)
