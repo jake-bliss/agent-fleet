@@ -1094,5 +1094,60 @@ class ReviewFixesTest(unittest.TestCase):
         self.assertIsNone(env)
 
 
+
+class EpicReportTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("EFFICIENCY_REPORT", os.path.join(HERE, "efficiency-report"))
+        loader = importlib.machinery.SourceFileLoader("adw_epic_report", os.path.join(HERE, "..", "board", "epic-report.py"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cls.er = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.er)
+
+    def test_pr_numbers_ignore_digits_in_owner_and_repo(self):
+        f = self.er.pr_numbers
+        self.assertEqual(f(42), [42])
+        self.assertEqual(f("42"), [42])
+        self.assertEqual(f("#42"), [42])
+        self.assertEqual(f("https://github.com/org2/repo3/pull/42"), [42])
+        self.assertEqual(f("#12 and #345"), [12, 345])
+        self.assertEqual(f(["#7", "https://github.com/a1/b2/pull/9"]), [7, 9])
+        self.assertEqual(f("owner/repo"), [])
+        self.assertEqual(f(None), [])
+
+    def test_born_without_birthtime_uses_oldest_file_not_rewritten_graph(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self.er.Path(tmp)
+            plan, graph, old = d / "plan.md", d / "graph.json", d / "segments" / "s1.md"
+            old.parent.mkdir()
+            for x in (plan, graph, old):
+                x.write_text("x")
+            os.utime(old, (1000, 1000))
+            os.utime(plan, (5000, 5000))
+            os.utime(graph, (9000, 9000))
+
+            class NoBirth:
+                def __init__(self, st):
+                    self.st_mtime = st.st_mtime
+
+            real_stat = self.er.Path.stat
+            with mock.patch.object(self.er.Path, "stat", lambda self, **kw: NoBirth(real_stat(self, **kw))), \
+                    mock.patch.object(self.er.Path, "is_file", lambda self: not self.name == "segments"):
+                self.assertEqual(self.er.epic_born(d, (plan, graph)), 1000)
+
+    def test_born_prefers_birthtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = self.er.Path(tmp)
+            plan = d / "plan.md"
+            plan.write_text("x")
+
+            class Birth:
+                st_birthtime = 1234
+                st_mtime = 9999
+
+            with mock.patch.object(self.er.Path, "stat", lambda self, **kw: Birth()):
+                self.assertEqual(self.er.epic_born(d, (plan,)), 1234)
+
+
 if __name__ == "__main__":
     unittest.main()
