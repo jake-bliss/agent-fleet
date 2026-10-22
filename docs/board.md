@@ -144,6 +144,8 @@ tokens (default 100000) is sent `/compact` once by `adw-board watch`; `ADW_LEAD_
   trouble event when `host_pct` reaches `ADW_DISK_ALERT_PCT` (default 80).
 - `ADW_MATE_IGNORE_CWDS` is a comma-separated list of cwd prefixes whose tabs stay out of the digest, `show` and `watch`.
 
+Agents on other machines can appear on the same board; see `docs/multi-machine.md`.
+
 ## Chain of command
 
 You -> first mate -> epic leads -> crew.

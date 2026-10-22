@@ -77,6 +77,7 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `docs/way-of-working.md` | the whole method in two pages — start here |
 | `docs/board.md` | the fleet layer: board, decisions, status, first mate |
 | `docs/ci-gate.md` | local CI parity and the pre-push gate |
+| `docs/multi-machine.md` | one hub board over several machines' herdr sockets (optional) |
 | `docs/worktrees.md` | copy-on-write worktrees |
 | `docs/codex-overnight.md` | handing Codex unattended overnight builds: cutting, the goal prompt, the morning handoff |
 | `docs/CLAUDE.snippet.md` | conventions to paste into your own `CLAUDE.md` |

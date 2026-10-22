@@ -27,6 +27,11 @@ KINDS = ("waiting", "progress", "done", "failed")
 LINE = re.compile(r"^(\S+) (\w+): (.*?)(?: until (\S+))?$")
 
 
+def pane_ref(pane):
+    m = os.environ.get("ADW_MACHINE")
+    return f"{m}/{pane}" if m and pane and "/" not in pane else pane
+
+
 def iso(dt):
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -134,11 +139,11 @@ def main():
         if prev.get("session") and prev["session"] != session and not a.takeover and session_live(prev["session"]):
             raise SystemExit(f"adw-status lead: {prev.get('pane')} is still the live lead of {epic}; "
                              "pass --takeover only if the human asked for a new lead")
-        rec = {"pane": pane, "session": session, "at": iso(datetime.now(timezone.utc))}
+        rec = {"pane": pane_ref(pane), "session": session, "at": iso(datetime.now(timezone.utc))}
         tmp = EPICS / epic / f".lead.json.{os.getpid()}.tmp"
         tmp.write_text(json.dumps(rec, indent=2))
         tmp.replace(EPICS / epic / "lead.json")
-        moved = rebind_asks(epic, prev.get("session"), session, pane) if prev.get("session") != session else 0
+        moved = rebind_asks(epic, prev.get("session"), session, pane_ref(pane)) if prev.get("session") != session else 0
         print(f"{pane} is now the lead of {epic}" + (f"; {moved} decision(s) re-routed here" if moved else ""))
         return
     text = " ".join(a.text.split())

@@ -75,9 +75,46 @@ def all_asks():
     return sorted(out, key=lambda d: d["created"])
 
 
-def herdr(*args):
+def configured_machines():
+    raw = os.environ.get("ADW_MACHINES")
+    if raw is None:
+        try:
+            raw = ",".join(json.loads((ADW_HOME / "machines.json").read_text()).get("machines", []))
+        except (OSError, ValueError, AttributeError, TypeError):
+            raw = ""
+    return [m.strip() for m in raw.split(",") if re.fullmatch(r"\w+", m.strip())]
+
+
+REMOTE_DIR = Path(os.environ.get("ADW_HERDR_REMOTE_DIR") or Path.home() / ".config/herdr/remote")
+REMOTE_HERDR = {m: REMOTE_DIR / f"{m}.sock" for m in configured_machines()}
+MACHINE = os.environ.get("ADW_MACHINE")
+REMOTE_PANE = re.compile(r"(\w+)/(w\w+:p\w+)")
+
+
+def live_remotes():
+    return [m for m, s in REMOTE_HERDR.items() if m != MACHINE and s.is_socket()]
+
+
+def pane_ref(pane):
+    return f"{MACHINE}/{pane}" if MACHINE and pane and "/" not in pane else pane
+
+
+def herdr_cmd(args, machine=None):
+    args = list(args)
+    for i, a in enumerate(args):
+        m = REMOTE_PANE.fullmatch(a) if isinstance(a, str) else None
+        if m and m.group(1) == MACHINE:
+            args[i] = m.group(2)
+        elif m and m.group(1) in REMOTE_HERDR:
+            machine, args[i] = m.group(1), m.group(2)
+    env = {**os.environ, "HERDR_SOCKET_PATH": str(REMOTE_HERDR[machine])} if machine else None
+    return ["herdr", *args], env
+
+
+def herdr(*args, machine=None):
+    cmd, env = herdr_cmd(args, machine)
     try:
-        r = subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=15)
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
     except (OSError, subprocess.TimeoutExpired) as e:
         return None, str(e)
     if r.returncode != 0:
@@ -250,7 +287,7 @@ def cmd_new(a):
     info = agent_info(pane) if pane else None
     d = {"id": "d-" + secrets.token_hex(3), "created": now(), "status": "open",
          "title": a.title, "epic": a.epic, "body": body, "options": options,
-         "recommend": a.recommend, "pane": pane, "session": info and info["session"],
+         "recommend": a.recommend, "pane": pane_ref(pane), "session": info and info["session"],
          "cwd": os.getcwd(), "default_at": default_at}
     save(d)
     print(d["id"])

@@ -59,6 +59,7 @@ only what you need, which keeps context small, and they enforce the safe form.
   the merge rules in `$ADW_HOME/pr-tools.json` hold, and refuses everything without that file.
 - `pr-state <pr> --any` with `--wait` returns as soon as any one condition is met.
 - `codex-review diff|plan|ask` runs the second-model review with the contract and lenses attached.
+- `jev-filter` ranks search hits by relevance to a question before you open the files.
 - `efficiency-report` shows where the context spend went.
 - `adw-tick` is the cheap wake check for a lead tab; `claude-review` runs the Claude-side review headlessly
   and writes the verdict file.
@@ -76,6 +77,9 @@ what enters context, not for output length.
 - **Never re-read a file already read this session.** Edits fail loudly on stale content, so
   re-reading "to verify" buys nothing.
 - **Filter before ingesting.** Narrow a search pattern rather than truncating its results.
+  `rg -n --no-heading '<pattern>' . | jev-filter "<what you need>" -f` ranks the hits so only the useful
+  files enter context (needs `JEV_FILTER_ENDPOINT` and `JEV_FILTER_API_KEY`; see the script header). Pipe in
+  every hit; judge shallow questions ("would this file help answer X") only.
 - **Logs to a file.** Long command output goes to a log; read back the exit code, failures and
   summary — never `| tail` alone, which hides the exit status.
 - **Delegate wide reads** — subagent context is isolated; only the conclusion returns. This is the

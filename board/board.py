@@ -10,6 +10,7 @@ Env: ADW_HOME, ADW_LAUNCH_ARGS (args for agents launched from the board),
      ADW_LEAD_REFRESH_AT (context tokens past which an idle refreshable lead is flagged, default 150000),
      ADW_LEAD_REFRESH_LONG_WAIT_AT (same, for a wait of an hour or more, default 80000),
      ADW_LEAD_AUTO_COMPACT (0 disables), ADW_LEAD_COMPACT_AT (default 100000), ADW_LEAD_COMPACT_IDLE (secs, default 2700),
+     ADW_MACHINES (comma-separated names of other machines whose herdr is reachable at ~/.config/herdr/remote/<name>.sock), ADW_MACHINE (this machine's own name),
      ADW_MATE_IGNORE_CWDS (comma-separated cwd prefixes the first mate ignores), ADW_DISK_ALERT_PCT (default 80)
 """
 import argparse
@@ -285,8 +286,9 @@ def classify(status, text):
     return "finished" if status == "done" else "idle"
 
 
-def herdr(*args):
-    r = subprocess.run(["herdr", *args], capture_output=True, text=True, timeout=15)
+def herdr(*args, machine=None):
+    cmd, env = asks.herdr_cmd(args, machine)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
     if r.returncode != 0:
         return None
     return r.stdout
@@ -372,12 +374,17 @@ def load_agents(epics):
     if out is None:
         return None
     raw = json.loads(out)["result"]["agents"]
+    for m in asks.live_remotes():
+        rout = herdr("agent", "list", machine=m)
+        for a in json.loads(rout)["result"]["agents"] if rout else []:
+            raw.append({**a, "pane_id": f"{m}/{a['pane_id']}", "machine": m})
     with ThreadPoolExecutor(max_workers=8) as pool:
         texts = list(pool.map(lambda a: herdr("agent", "read", a["pane_id"], "--source", "recent-unwrapped", "--lines", "60") or "", raw))
     tab_labels = {}
-    tout = herdr("tab", "list")
-    for t in json.loads(tout)["result"]["tabs"] if tout else []:
-        tab_labels[t["tab_id"]] = t.get("label") or ""
+    for m in [None, *asks.live_remotes()]:
+        tout = herdr("tab", "list", machine=m)
+        for t in json.loads(tout)["result"]["tabs"] if tout else []:
+            tab_labels[(m, t["tab_id"])] = t.get("label") or ""
     links = load_links()
     leads = {e["lead"]["session"]: e for e in epics if (e.get("lead") or {}).get("session")}
     agents = []
@@ -385,7 +392,7 @@ def load_agents(epics):
         sid = (a.get("agent_session") or {}).get("value")
         title = a.get("terminal_title_stripped") or ""
         twords = words(title)
-        label = tab_labels.get(a.get("tab_id"), "")
+        label = tab_labels.get((a.get("machine"), a.get("tab_id")), "")
         if label and not re.fullmatch(r"t?\d+", label):
             title = label
         linked = links.get(sid) if sid else None
@@ -402,6 +409,7 @@ def load_agents(epics):
             "title": title,
             "terminal_title": a.get("terminal_title_stripped") or "",
             "cwd": a.get("cwd", "").replace(str(Path.home()), "~"),
+            "machine": a.get("machine") or "",
             "epic": epic,
             "linked": bool(linked or led),
             "role": "lead" if led else "crew" if epic else "loose",
@@ -619,7 +627,7 @@ def launch(body):
 
 VIEW_KEYS = {"esc", "enter", "up", "down", "left", "right", "tab", "shift+tab", "ctrl+c",
              "1", "2", "3", "4", "5", "y", "n"}
-PANE_ID = re.compile(r"w\w+:p\w+")
+PANE_ID = re.compile(r"(?:\w+/)?w\w+:p\w+")
 
 
 def pane_view(pane, lines):

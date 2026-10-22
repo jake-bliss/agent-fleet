@@ -1025,5 +1025,46 @@ class ModelPinTest(unittest.TestCase):
         self.assertEqual(r["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
+class MachineRoutingTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        loader = importlib.machinery.SourceFileLoader("adw_asks", os.path.join(HERE, "..", "board", "asks.py"))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        cls.asks = importlib.util.module_from_spec(spec)
+        loader.exec_module(cls.asks)
+
+    def patched(self, machine=None, remotes=("node1",)):
+        a = self.asks
+        return mock.patch.multiple(a, MACHINE=machine,
+                                   REMOTE_HERDR={m: a.Path(f"/x/{m}.sock") for m in remotes})
+
+    def test_machines_from_env(self):
+        with mock.patch.dict(os.environ, {"ADW_MACHINES": "laptop, node1,bad name"}):
+            self.assertEqual(self.asks.configured_machines(), ["laptop", "node1"])
+
+    def test_default_is_single_machine(self):
+        with mock.patch.dict(os.environ, {"ADW_HOME": tempfile.mkdtemp()}):
+            os.environ.pop("ADW_MACHINES", None)
+            self.assertEqual(self.asks.configured_machines(), [])
+
+    def test_remote_pane_routes_to_socket(self):
+        with self.patched():
+            cmd, env = self.asks.herdr_cmd(["agent", "get", "node1/w1:p2"])
+        self.assertEqual(cmd, ["herdr", "agent", "get", "w1:p2"])
+        self.assertEqual(env["HERDR_SOCKET_PATH"], "/x/node1.sock")
+
+    def test_own_machine_prefix_is_local(self):
+        with self.patched(machine="node1"):
+            cmd, env = self.asks.herdr_cmd(["agent", "get", "node1/w1:p2"])
+        self.assertEqual((cmd, env), (["herdr", "agent", "get", "w1:p2"], None))
+
+    def test_pane_ref_prefixes_only_with_machine(self):
+        with self.patched(machine="node1"):
+            self.assertEqual(self.asks.pane_ref("w1:p2"), "node1/w1:p2")
+            self.assertEqual(self.asks.pane_ref("laptop/w1:p2"), "laptop/w1:p2")
+        with self.patched(machine=None):
+            self.assertEqual(self.asks.pane_ref("w1:p2"), "w1:p2")
+
+
 if __name__ == "__main__":
     unittest.main()

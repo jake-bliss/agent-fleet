@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""Rank grep/candidate lines by relevance to a question, so only the useful
+files enter an agent's context.
+
+Reads candidates on stdin (one per line, ideally `rg -n --no-heading` output),
+scores each with a relevance-scoring endpoint (configured by env, see below), and prints the ones worth opening.
+
+    rg -n --no-heading -g '*.py' 'refresh_token' . \
+      | jev-filter "How is an expired refresh token rejected?"
+
+Config (no default host; the tool exits if the endpoint or key is unset):
+  JEV_FILTER_ENDPOINT   URL of the scoring service
+  JEV_FILTER_API_KEY    bearer token for it
+  JEV_FILTER_MODEL      model name sent with each request (default "jev-latest")
+  JEV_FILTER_USD_PER_MTOK  optional input price, only for the cost shown in the summary line
+
+Why this exists: context is re-read on every turn, so a file you open and do
+not need costs its own size times every remaining turn. Scoring candidates
+out-of-context is far cheaper than reading them in.
+
+Two rules learned the hard way:
+
+  * Never pre-truncate the candidate list. `head -80` on the input once cut
+    every implementation file out of a run, and the ranking confidently
+    returned test files, because test method names read like prose. Pipe in
+    everything; this script batches.
+
+    Narrowing the grep PATTERN is fine and encouraged; truncating its RESULTS
+    is not. Cost and latency scale with candidate count: 387 candidates runs
+    in 2.7s for $0.003, while a sloppy 3,667-candidate grep took 24s and
+    $0.025. Tighten the pattern, not the list.
+  * Judge shallow properties. "Would this file help answer X" works. "Does
+    this diff need a cross-tenant review" does not — deciding that is the
+    review itself.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+ENDPOINT = os.environ.get("JEV_FILTER_ENDPOINT", "")
+MODEL = os.environ.get("JEV_FILTER_MODEL", "jev-latest")
+USD_PER_MTOK = float(os.environ.get("JEV_FILTER_USD_PER_MTOK") or 0)
+BATCH = 75          # >100 questions per request returns 400
+MAX_HIT_CHARS = 260  # keep each candidate short; long state costs accuracy
+
+
+def score(hits, question, key, model, retries=3):
+    """Yield (value, hit) for every hit, in input order."""
+    out = []
+    for start in range(0, len(hits), BATCH):
+        chunk = hits[start:start + BATCH]
+        questions = {
+            f"h{start + i}": {
+                "type": "noul",
+                "instructions": {
+                    "investigation_question": question,
+                    "candidate": hit[:MAX_HIT_CHARS],
+                    "question": "Would opening the file in `candidate` help answer "
+                                "`investigation_question`?",
+                },
+                "criteria": {
+                    "true": "This file implements or directly governs the behaviour asked about.",
+                    "false": "Incidental: a test, fixture, migration, schema dump, generated file, "
+                             "or a file that merely mentions the term.",
+                },
+            }
+            for i, hit in enumerate(chunk)
+        }
+        body = json.dumps({
+            "state": {"investigation": question},
+            "model": model,
+            "questions": questions,
+        }).encode()
+
+        for attempt in range(retries):
+            req = urllib.request.Request(
+                ENDPOINT, data=body,
+                headers={"Authorization": f"Bearer {key}",
+                         "Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=180) as resp:
+                    payload = json.loads(resp.read())
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429 and attempt < retries - 1:
+                    time.sleep(float(exc.headers.get("retry-after", 2 ** attempt)))
+                    continue
+                sys.exit(f"jev-filter: HTTP {exc.code}: {exc.read()[:400].decode(errors='replace')}")
+            except urllib.error.URLError as exc:
+                sys.exit(f"jev-filter: cannot reach the scoring endpoint: {exc.reason}")
+
+        for i, hit in enumerate(chunk):
+            out.append((payload["answers"][f"h{start + i}"]["noul"], hit))
+        yield payload["usage"]["input_tokens"], out
+        out = []
+
+
+def file_of(hit):
+    return hit.split(":", 1)[0]
+
+
+def size_of(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="jev-filter",
+        description="Rank grep candidates by relevance so only useful files enter context.")
+    ap.add_argument("question", help="what you are trying to find out")
+    ap.add_argument("-t", "--threshold", type=float, default=0.5,
+                    help="keep candidates scoring at or above this (default 0.5)")
+    ap.add_argument("-n", "--top", type=int,
+                    help="keep the N highest-scoring FILES instead of thresholding")
+    ap.add_argument("-b", "--budget", type=int,
+                    help="keep highest-scoring files until ~this many tokens of file "
+                         "content would be read")
+    ap.add_argument("-f", "--files-only", action="store_true",
+                    help="print bare file paths, one per line (pipe into an agent or xargs)")
+    ap.add_argument("--json", action="store_true", help="print every score as JSON")
+    ap.add_argument("--all", action="store_true", help="print all candidates, ranked")
+    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("-q", "--quiet", action="store_true", help="suppress the summary line")
+    args = ap.parse_args()
+
+    key = os.environ.get("JEV_FILTER_API_KEY")
+    if not key or not ENDPOINT:
+        sys.exit("jev-filter: JEV_FILTER_ENDPOINT and JEV_FILTER_API_KEY must be set")
+
+    hits = [ln.rstrip("\n") for ln in sys.stdin if ln.strip()]
+    if not hits:
+        sys.exit("jev-filter: no candidates on stdin")
+
+    started, tokens, scored = time.time(), 0, []
+    for used, part in score(hits, args.question, key, args.model):
+        tokens += used
+        scored.extend(part)
+    scored.sort(key=lambda r: -r[0])
+    elapsed = (time.time() - started) * 1000
+
+    # Collapse to files, keeping each file's best line.
+    best: dict[str, tuple[float, str]] = {}
+    for value, hit in scored:
+        path = file_of(hit)
+        if path not in best or value > best[path][0]:
+            best[path] = (value, hit)
+    ranked = sorted(best.items(), key=lambda kv: -kv[1][0])
+
+    if args.top:
+        kept = ranked[:args.top]
+    elif args.budget:
+        kept, running = [], 0
+        for path, vh in ranked:
+            running += size_of(path) // 4
+            if running > args.budget and kept:
+                break
+            kept.append((path, vh))
+    else:
+        kept = [(p, vh) for p, vh in ranked if vh[0] >= args.threshold]
+
+    if args.json:
+        json.dump([{"score": v, "hit": h} for v, h in scored], sys.stdout, indent=1)
+        print()
+        return
+
+    rows = ranked if args.all else kept
+    for path, (value, hit) in rows:
+        print(path if args.files_only else f"{value:.2f}  {hit}")
+
+    if not args.quiet and not args.files_only:
+        all_tok = sum(size_of(p) for p in best) // 4
+        kept_tok = sum(size_of(p) for p, _ in kept) // 4
+        saved = f"{100 - 100 * kept_tok / all_tok:.0f}%" if all_tok else "n/a"
+        print(f"\n{len(hits)} candidates in {len(best)} files -> kept {len(kept)} files | "
+              f"~{all_tok:,} tok if all read, ~{kept_tok:,} kept ({saved} avoided) | "
+              f"{elapsed:.0f}ms | {tokens:,} tok" + (f" | ${tokens / 1e6 * USD_PER_MTOK:.4f}" if USD_PER_MTOK else ""),
+              file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
