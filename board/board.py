@@ -7,7 +7,10 @@ Usage: adw-board [--days N] [--all] [--full] [--json] [--no-herdr]
 
 Env: ADW_HOME, ADW_LAUNCH_ARGS (args for agents launched from the board),
      ADW_BOARD_TS_HOST + ADW_BOARD_TS_USER (optional tailscale serve access), ADW_MATE_DIGEST_AT,
-     ADW_LEAD_REFRESH_AT (context tokens past which an idle refreshable lead is flagged, default 150000)
+     ADW_LEAD_REFRESH_AT (context tokens past which an idle refreshable lead is flagged, default 150000),
+     ADW_LEAD_REFRESH_LONG_WAIT_AT (same, for a wait of an hour or more, default 80000),
+     ADW_LEAD_AUTO_COMPACT (0 disables), ADW_LEAD_COMPACT_AT (default 100000), ADW_LEAD_COMPACT_IDLE (secs, default 2700),
+     ADW_MATE_IGNORE_CWDS (comma-separated cwd prefixes the first mate ignores), ADW_DISK_ALERT_PCT (default 80)
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
@@ -82,6 +85,28 @@ def set_snooze(key, until):
         tmp = SNOOZES.with_name(f".{SNOOZES.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
         tmp.write_text(json.dumps(sn, indent=2))
         tmp.replace(SNOOZES)
+
+
+PINS = ADW_HOME / "board-pins.json"
+PIN_KEY = re.compile(r"(s:[A-Za-z0-9_-]{1,64}|p:w\w+:p\w+)")
+
+
+def load_pins():
+    try:
+        raw = json.loads(PINS.read_text())
+    except (OSError, ValueError):
+        return []
+    return [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else []
+
+
+def set_pin(key, on):
+    if not PIN_KEY.fullmatch(key or ""):
+        raise ValueError("bad pin key")
+    with SNOOZE_LOCK:
+        pins = [k for k in load_pins() if k != key] + ([key] if on else [])
+        tmp = PINS.with_name(f".{PINS.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+        tmp.write_text(json.dumps(pins, indent=2))
+        tmp.replace(PINS)
 
 
 def snooze_until(choice):
@@ -175,7 +200,9 @@ def load_epic(d):
     try:
         g = json.loads((d / "graph.json").read_text())
     except (OSError, ValueError):
-        return None
+        if not (d / "lead.json").exists():
+            return None
+        g = {}
     segs = g.get("segments") or []
     by = {}
     for s in segs:
@@ -286,6 +313,18 @@ def last_message_at(path):
 
 IN_TAB_WORK = re.compile(r"← \d+ agent|\d+ background|Waiting for \d+ background")
 REFRESH_AT = int(os.environ.get("ADW_LEAD_REFRESH_AT", "150000"))
+REFRESH_LONG_WAIT_AT = int(os.environ.get("ADW_LEAD_REFRESH_LONG_WAIT_AT", "80000"))
+LONG_WAIT = 3600
+COMPACT_AT = int(os.environ.get("ADW_LEAD_COMPACT_AT", "100000"))
+COMPACT_IDLE = int(os.environ.get("ADW_LEAD_COMPACT_IDLE", "2700"))
+COMPACT_MSG = ("/compact Keep: the epic name and that you are its lead; each segment in flight with PR number, state and "
+               "what it waits on; open asks; anything the user or the first mate told you that is still in force; "
+               "background shells and agents still running.")
+
+
+def refresh_at(w):
+    """Past the 1h prompt-cache TTL a lead's resume re-writes its whole context, so long waits refresh smaller."""
+    return REFRESH_LONG_WAIT_AT if w.get("until") and w["until"] - time.time() >= LONG_WAIT else REFRESH_AT
 
 
 def context_tokens(sid):
@@ -335,6 +374,10 @@ def load_agents(epics):
     raw = json.loads(out)["result"]["agents"]
     with ThreadPoolExecutor(max_workers=8) as pool:
         texts = list(pool.map(lambda a: herdr("agent", "read", a["pane_id"], "--source", "recent-unwrapped", "--lines", "60") or "", raw))
+    tab_labels = {}
+    tout = herdr("tab", "list")
+    for t in json.loads(tout)["result"]["tabs"] if tout else []:
+        tab_labels[t["tab_id"]] = t.get("label") or ""
     links = load_links()
     leads = {e["lead"]["session"]: e for e in epics if (e.get("lead") or {}).get("session")}
     agents = []
@@ -342,6 +385,9 @@ def load_agents(epics):
         sid = (a.get("agent_session") or {}).get("value")
         title = a.get("terminal_title_stripped") or ""
         twords = words(title)
+        label = tab_labels.get(a.get("tab_id"), "")
+        if label and not re.fullmatch(r"t?\d+", label):
+            title = label
         linked = links.get(sid) if sid else None
         active = last_active(a["agent"], sid)
         led = leads.get(sid) if sid else None
@@ -353,7 +399,8 @@ def load_agents(epics):
             "pane": a["pane_id"],
             "kind": a["agent"],
             "status": a["agent_status"],
-            "title": a.get("terminal_title_stripped") or "",
+            "title": title,
+            "terminal_title": a.get("terminal_title_stripped") or "",
             "cwd": a.get("cwd", "").replace(str(Path.home()), "~"),
             "epic": epic,
             "linked": bool(linked or led),
@@ -418,7 +465,7 @@ def build(args):
     decisions = [d for d in asks.all_asks()
                  if d["status"] == "open" or (d.get("answer") or {}).get("at", 0) >= since]
     return {"generated": int(time.time()), "epics": epics, "agents": agents, "decisions": decisions,
-            "ask_fresh_hours": ASK_FRESH_HOURS, "snoozes": load_snoozes(), "no_herdr": args.no_herdr,
+            "ask_fresh_hours": ASK_FRESH_HOURS, "snoozes": load_snoozes(), "pins": load_pins(), "no_herdr": args.no_herdr,
             "completed": sorted(completed, key=lambda c: -c["completed_at"]),
             "mate": mate_digest(),
             "mate_pane": next((a["pane"] for a in agents or [] if a["kind"] == "claude" and a["session"]
@@ -720,6 +767,9 @@ def serve(args):
             else:
                 raise ValueError("unknown action")
             return {"ok": True}
+        if route == "/api/pin":
+            set_pin(body.get("key", ""), bool(body.get("on")))
+            return {"ok": True}
         if route == "/api/snooze":
             key = body.get("key", "")
             set_snooze(key, None if body.get("for") == "off" else snooze_until(body.get("for")))
@@ -755,7 +805,22 @@ def serve(args):
 
 
 MATE = ADW_HOME / "firstmate"
+MATE_IGNORE_CWDS = [c.strip().rstrip("/") for c in os.environ.get("ADW_MATE_IGNORE_CWDS", "").split(",") if c.strip()]
 DIGEST_TIMES = [t.strip() for t in os.environ.get("ADW_MATE_DIGEST_AT", "09:00,16:00").split(",") if t.strip()]
+
+
+def for_mate(b):
+    if b.get("agents") is not None:
+        home = str(Path.home())
+        ignored = [c.replace("~", home, 1) if c.startswith("~") else c for c in MATE_IGNORE_CWDS]
+        b["agents"] = [a for a in b["agents"]
+                       if not any(a["cwd"].replace("~", home, 1) == c or a["cwd"].replace("~", home, 1).startswith(c + "/")
+                                  for c in ignored)
+                       and not (a.get("session") and is_mate_session(a["session"]))]
+    return b
+
+
+DISK_ALERT_PCT = int(os.environ.get("ADW_DISK_ALERT_PCT", "80"))
 
 
 def ago_s(ts):
@@ -777,17 +842,22 @@ def mate_events(b):
             ev[f"watch:{key}:{w['state']}:{int(w['at'])}"] = f"{kind} {w['state']} {a['pane']} {a['title']}{role_s(a)} :: {w['text']}"
     for a in b.get("agents") or []:
         w = a.get("watch")
-        if (a.get("role") == "lead" and (a.get("context") or 0) >= REFRESH_AT and a["status"] in ("idle", "done")
+        if (a.get("role") == "lead" and (a.get("context") or 0) >= refresh_at(w or {}) and a["status"] in ("idle", "done")
                 and w and w["state"] == "waiting" and "[refreshable]" in w["text"]
                 and (a.get("last_active") or 0) <= w["at"] + 30 and a["attention"] != "background"
                 and not IN_TAB_WORK.search(a.get("screen") or "")):
             ev[f"refresh:{a['session']}"] = (f"refresh {a['pane']} session {a['session']} [lead of {a['epic']}] at {a['context'] // 1000}k context, "
                                              f"waiting with nothing in flight in-tab :: {w['text']}")
+    try:
+        dk = json.loads((ADW_HOME / "disk.json").read_text())
+        pct = dk.get("host_pct")
+        if pct is not None and pct >= DISK_ALERT_PCT:
+            ev[f"disk:host:{int(pct) // 5 * 5}"] = f"trouble disk host at {pct}% (alert at {DISK_ALERT_PCT}%)"
+    except (OSError, ValueError):
+        pass
     for e in b["epics"]:
-        if e.get("paused"):
-            continue
         live_segs = e["counts"].get("building", 0) + e["counts"].get("pr-open", 0)
-        if e.get("lead") and not e.get("lead_pane") and live_segs and b.get("agents") is not None:
+        if e.get("lead") and not e.get("lead_pane") and live_segs and not e.get("paused") and b.get("agents") is not None:
             ev[f"leaderless:{e['epic']}:{e['lead']['session']}"] = (
                 f"trouble leaderless {e['epic']}: lead {e['lead']['pane']} is gone with {live_segs} segment(s) in flight")
         c = e["counts"]
@@ -855,6 +925,27 @@ def show(b, target):
 REFIRE_AFTER = 600
 
 
+def auto_compact(b, st):
+    """Compact a sleeping lead before its 1h prompt cache expires, so its next wake re-writes a summary instead of
+    its whole context. /compact keeps in-tab background agents and shells, unlike the [refreshable] /clear."""
+    done = st.setdefault("compacted", {})
+    now = time.time()
+    for a in b.get("agents") or []:
+        sid, ctx, active = a.get("session"), a.get("context") or 0, a.get("last_active") or 0
+        if (a.get("role") != "lead" or a.get("kind") != "claude" or not sid or ctx < COMPACT_AT
+                or a["status"] not in ("idle", "done") or a["attention"] in ("blocked", "working")
+                or not active or now - active < COMPACT_IDLE or done.get(sid, {}).get("ctx") == ctx):
+            continue
+        out, err = asks.herdr("agent", "prompt", a["pane"], COMPACT_MSG)
+        ok = out is not None
+        with open(MATE / "compact.log", "a") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M} {'compact' if ok else 'compact-failed'} {a['pane']} {a.get('epic')} "
+                    f"{ctx // 1000}k idle {int((now - active) // 60)}m{'' if ok else ' :: ' + str(err)}\n")
+        if ok:
+            done[sid] = {"ctx": ctx, "at": now}
+    st["compacted"] = {k: v for k, v in done.items() if now - v["at"] < 86400}
+
+
 def watch(args):
     MATE.mkdir(parents=True, exist_ok=True)
     state_p = MATE / "watch-state.json"
@@ -864,19 +955,22 @@ def watch(args):
         st = {}
     seen = set(st.get("seen", []))
     fired = st.get("fired", {})
-    pending = set()
+    pending = set(st.get("pending", []))
     first = not st
     while True:
         try:
             asks.apply_defaults()
-            b = build(args)
+            b = for_mate(build(args))
             asks.retry_deliveries()
         except Exception as e:  # keep the stream alive across transient herdr/file errors
             print(f"watch-error {type(e).__name__}: {e}", flush=True)
             time.sleep(60)
             continue
+        if os.environ.get("ADW_LEAD_AUTO_COMPACT", "1") != "0":
+            auto_compact(b, st)
         ev = mate_events(b)
         t = time.time()
+        emitted = False
         if first:
             print(f"watch-started {len(ev)} current items (not replayed; run adw-board digest)", flush=True)
             first = False
@@ -888,6 +982,7 @@ def watch(args):
                 if t - fired.get(k, 0) > REFIRE_AFTER:
                     print(ev[k], flush=True)
                     fired[k] = t
+                    emitted = True
             pending = set(ev) - seen
         seen = set(ev)
         fired = {k: v for k, v in fired.items() if t - v < 86400}
@@ -900,10 +995,14 @@ def watch(args):
             if now.strftime("%H:%M") >= t and slot not in st["digests"]:
                 if primed:
                     print(f"digest-due {t}", flush=True)
+                    emitted = True
                 st["digests"].append(slot)
         st["digests"] = st["digests"][-10:]
         st["seen"] = sorted(seen)
+        st["pending"] = sorted(pending)
         state_p.write_text(json.dumps(st))
+        if args.once and emitted:
+            return
         time.sleep(30)
 
 
@@ -916,6 +1015,7 @@ def main():
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--full", action="store_true")
     ap.add_argument("--no-herdr", action="store_true")
+    ap.add_argument("--once", action="store_true", help="watch: exit after the first poll that emits events")
     ap.add_argument("--serve", nargs="?", type=int, const=4518, metavar="PORT")
     args = ap.parse_args()
     if args.serve is not None:
@@ -925,6 +1025,8 @@ def main():
         watch(args)
         return
     b = build(args)
+    if args.cmd in ("digest", "show"):
+        for_mate(b)
     if args.cmd == "digest":
         print(digest(b), end="")
         return

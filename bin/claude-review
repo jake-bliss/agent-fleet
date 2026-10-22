@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# claude-review <worktree> <base-ref> [output] [since-sha]
+# Run ADW's clean-context adversarial review through the authenticated Claude Code CLI.
+# The brief is intentionally not accepted as input. Claude receives read-only tools only.
+set -euo pipefail
+
+ADW_HOME="${ADW_HOME:-$HOME/.claude/adw}"
+LENS_DIR="$ADW_HOME/review/lenses"
+CONTRACT="$ADW_HOME/review/review-contract.md"
+WORKTREE="${1:?worktree path}"
+BASE_REF="${2:?base ref, e.g. origin/<default branch>}"
+OUTPUT="${3:-$HOME/.cache/adw-reviews/claude-adversarial-review.md}"
+# Optional: the snapshot (commit or `git stash create` id) the previous round reviewed. When given,
+# this is a fix-loop round: only the delta since that snapshot is reviewed, at medium effort.
+SINCE="${4:-}"
+MODEL="${ADW_CLAUDE_MODEL:-opus}"
+EFFORT="${ADW_CLAUDE_EFFORT:-$([ -n "$SINCE" ] && echo medium || echo high)}"
+
+[ -d "$WORKTREE" ] || { echo "worktree not found: $WORKTREE" >&2; exit 1; }
+WORKTREE="$(cd "$WORKTREE" && pwd -P)"
+mkdir -p "$(dirname "$OUTPUT")"
+OUTPUT_DIR="$(cd "$(dirname "$OUTPUT")" && pwd -P)"
+OUTPUT="$OUTPUT_DIR/$(basename "$OUTPUT")"
+case "$OUTPUT" in
+  "$WORKTREE"|"$WORKTREE"/*)
+    echo "review output must live outside the reviewed worktree: $OUTPUT" >&2
+    exit 1
+    ;;
+esac
+
+MERGE_BASE="$(git -C "$WORKTREE" merge-base HEAD "$BASE_REF")" || {
+  echo "cannot resolve merge-base for $BASE_REF in $WORKTREE" >&2
+  exit 1
+}
+DIFF_FILE="$OUTPUT_DIR/.adw-review-diff-$$.patch"
+trap 'rm -f "$DIFF_FILE"' EXIT INT TERM
+if [ -n "$SINCE" ]; then
+  git -C "$WORKTREE" rev-parse --verify -q "$SINCE^{commit}" >/dev/null || {
+    echo "cannot resolve reviewed snapshot: $SINCE" >&2
+    exit 1
+  }
+  git -C "$WORKTREE" --no-pager diff "$SINCE" > "$DIFF_FILE"
+  [ -s "$DIFF_FILE" ] || { echo "fix delta is empty since $SINCE" >&2; exit 1; }
+  SCOPE="This is a FIX-LOOP round. The full change (merge base $MERGE_BASE) was already reviewed at snapshot $SINCE. The diff artifact holds ONLY the fix made since then. Review that fix: does it close the defect it targets, and does it introduce a new one? Read surrounding code and callsites as needed, but do not re-review unchanged parts of the branch."
+else
+  git -C "$WORKTREE" --no-pager diff "$MERGE_BASE" > "$DIFF_FILE"
+  [ -s "$DIFF_FILE" ] || { echo "review diff is empty against $BASE_REF" >&2; exit 1; }
+  SCOPE="This is the first review round over the full change since the merge base."
+fi
+BEFORE_STATUS="$(git -C "$WORKTREE" status --porcelain=v1)"
+HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD)"
+
+read -r -d '' PROMPT <<PROMPT || true
+You are the independent adversarial reviewer in an ADW pipeline. You did not write this change and you have intentionally NOT been given its brief. Infer intent from the repository and diff, then attack the implementation for concrete defects.
+
+Repository: $WORKTREE
+Merge base: $MERGE_BASE
+Exact diff artifact: $DIFF_FILE
+Scope: $SCOPE
+
+Read the complete diff artifact first. Use Read, Grep, and Glob to inspect the full repository and all callsites needed to judge it. Read the repository's applicable AGENTS.md and/or .claude/CLAUDE.md instructions. Read these lenses as written:
+- $LENS_DIR/adversarial-review.md
+- $LENS_DIR/callsite-coverage.md
+- $LENS_DIR/house-style.md
+
+Return only actionable findings. Every finding must include file:line, the triggering input/state, the observable failure, severity (critical | important | suggestion | nitpick per $CONTRACT), and confidence (high | medium | low). Only CRITICAL, or IMPORTANT at high confidence, blocks the change; label everything else honestly rather than inflating it. Do not report style preferences unless they violate repository rules. If there are no concrete defects, say so plainly and list the failure paths you checked.
+
+End your reply with the contract's machine-readable verdict as a fenced \`\`\`json block: {"reviewer": "claude", "verdict": "pass|fail", "findings": [{"file", "line", "severity", "claim", "scenario", "confidence"}]}. verdict is fail if any CRITICAL, or any IMPORTANT at high confidence; empty findings is pass.
+
+You are strictly read-only. Do not edit files, create files, stage changes, commit, fetch, push, or open a PR.
+PROMPT
+
+(
+  cd "$WORKTREE"
+  claude -p \
+    --model "$MODEL" \
+    --effort "$EFFORT" \
+    --permission-mode dontAsk \
+    --tools Read Grep Glob \
+    --allowedTools Read Grep Glob \
+    --add-dir "$LENS_DIR" "$ADW_HOME/review" "$OUTPUT_DIR" \
+    --no-session-persistence \
+    --output-format text \
+    "$PROMPT"
+) | tee "$OUTPUT"
+
+AFTER_STATUS="$(git -C "$WORKTREE" status --porcelain=v1)"
+if [ "$BEFORE_STATUS" != "$AFTER_STATUS" ]; then
+  echo "ERROR: worktree status changed during read-only Claude review" >&2
+  diff -u <(printf '%s\n' "$BEFORE_STATUS") <(printf '%s\n' "$AFTER_STATUS") >&2 || true
+  exit 1
+fi
+
+( cd "$WORKTREE" && review-receipt --write-report claude --sha "$HEAD_SHA" \
+    ${SINCE:+--since "$SINCE"} --tool claude-review "$OUTPUT" ) \
+  || echo "WARNING: no machine-readable verdict in the review; review-receipt claude pass will not accept it" >&2

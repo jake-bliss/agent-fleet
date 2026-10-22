@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ADW Board</title>
+<link rel="icon" id="favicon" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Source+Sans+3:wght@400;600;700&family=Geist+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -136,6 +137,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 <header>
   <h1>ADW Board</h1>
   <button class="go" id="mate-btn" style="align-self:center;min-height:40px" hidden>First mate ›</button>
+  <span id="pins" style="display:contents"></span>
   <span class="meta" id="meta">loading…</span>
   <label class="meta"><input type="checkbox" id="full"> all pending items</label>
 </header>
@@ -164,13 +166,20 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
     </div></details></section>
   <section class="wide" id="needs"></section>
   <section class="wide" id="mate" hidden></section>
-  <section class="wide" id="watch" hidden></section>
   <section class="wide" id="kanban" hidden></section>
-  <section class="wide" id="parked" hidden></section>
   <section class="wide" id="epics"></section>
   <section class="wide" id="tabs"></section>
+  <section class="wide" id="watch" hidden></section>
+  <section class="wide" id="parked" hidden></section>
 </main>
 <script>
+const helm = dot => "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<rect width="64" height="64" rx="14" fill="#171d1b"/><g stroke="#cfb87b" stroke-linecap="round" fill="none">
+<g stroke-width="5">${[0, 45, 90, 135].map(r => `<line x1="32" y1="6" x2="32" y2="58" transform="rotate(${r} 32 32)"/>`).join("")}</g>
+<circle cx="32" cy="32" r="16" stroke-width="5"/></g><circle cx="32" cy="32" r="6" fill="#cfb87b"/>
+${dot ? `<circle cx="51" cy="13" r="11" fill="#e0533f" stroke="#171d1b" stroke-width="3"/>` : ""}</svg>`);
+const setFavicon = dot => { const f = document.getElementById("favicon"), h = helm(dot); if (f.href !== h) f.href = h; };
+setFavicon(false);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ago = ts => { const s = Date.now()/1000 - ts;
   return s < 3600 ? `${Math.floor(s/60)}m` : s < 86400 ? `${Math.floor(s/3600)}h` : `${Math.floor(s/86400)}d`; };
@@ -296,6 +305,7 @@ function render(b) {
     if (snz[k]) sleeping.push([k, tabCard(a)]); else { n++; needs.push(tabCard(a)); }
   }
   const answered = decs.filter(d => d.status === "answered");
+  setFavicon(n > 0);
   const html = `<h2>Needs you <span class="n">${n}</span> <span class="dim" style="text-transform:none;letter-spacing:0">· adw-ask decisions and open dialogs only</span></h2>` + (needs.join("") || `<div class="green">nothing</div>`)
     + (sleeping.length ? `<details><summary>${sleeping.length} snoozed</summary>${sleeping.map(([k, h]) =>
         `<div class="actions"><span class="amber">snoozed until ${untilS(snz[k])}</span><button class="ghost" data-snooze="${esc(k)}" data-for="off">Unsnooze</button></div>${h}`).join("")}</details>` : "")
@@ -307,12 +317,12 @@ function render(b) {
   watched.sort((x, y) => order2[x.watch.state] - order2[y.watch.state]);
   const trouble = watched.filter(a => order2[a.watch.state] < 3).length;
   const until = w => w.until ? ` · until ${new Date(w.until * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "";
-  const watchHtml = watched.length ? `<h2>Watch <span class="n">${trouble ? trouble + " trouble" : ""}</span>
-    <span class="dim" style="text-transform:none;letter-spacing:0"> · states tabs declared with adw-status, checked against what the tab actually did</span></h2>
+  const watchHtml = watched.length ? `<details><summary><h2 style="display:inline">Watch <span class="n">${trouble ? trouble + " trouble" : ""}</span></h2>
+    <span class="dim"> · states tabs declared with adw-status, checked against what the tab actually did</span></summary>
     ${watched.map(a => { const [c, l] = W[a.watch.state]; return `<div class="item"><div class="row"><span class="tag ${c}">${l}</span>
       <span class="mono dim" data-view="${esc(a.pane)}">${esc(a.pane)}</span><span>${esc(a.title)}</span>${a.epic ? `<span class="tag">${esc(a.epic)}</span>` : ""}</div>
       <div class="dim" style="margin-top:3px">${esc(a.watch.kind)}: ${md(a.watch.text)} <span style="opacity:.8">· ${ago(a.watch.at)} ago${until(a.watch)}</span></div>
-      ${a.watch.state === "stopped-silent" ? `<div class="dim" style="font-size:13px;margin-top:3px">It kept going after this report and then stopped without a new one.</div>` : ""}</div>`; }).join("")}` : "";
+      ${a.watch.state === "stopped-silent" ? `<div class="dim" style="font-size:13px;margin-top:3px">It kept going after this report and then stopped without a new one.</div>` : ""}</div>`; }).join("")}</details>` : "";
   const mb = document.getElementById("mate-btn");
   mb.hidden = !b.mate_pane; mb.dataset.pane = b.mate_pane || "";
   const me = document.getElementById("mate");
@@ -336,7 +346,11 @@ function render(b) {
   const ke = document.getElementById("kanban");
   if (ke.dataset.html !== kanbanHtml) { ke.innerHTML = kanbanHtml; ke.dataset.html = kanbanHtml; ke.hidden = !anySeg; }
   const we = document.getElementById("watch");
-  if (we.dataset.html !== watchHtml) { we.innerHTML = watchHtml; we.dataset.html = watchHtml; we.hidden = !watched.length; }
+  if (we.dataset.html !== watchHtml) {
+    const open = [...we.querySelectorAll("details")].map(x => x.open);
+    we.innerHTML = watchHtml; we.dataset.html = watchHtml; we.hidden = !watched.length;
+    we.querySelectorAll("details").forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
+  }
   const parkedHtml = parked.length ? `<details><summary><h2 style="display:inline">Parked sessions <span class="n">${parked.length}</span></h2>
     <span class="dim"> · idle, would take a reply; newest first. "may ask" = its last message reads like a question.</span></summary>
     ${parked.map(tabCard).join("")}</details>` : "";
@@ -373,6 +387,7 @@ function render(b) {
       <td class="c-wide"><button class="ghost" data-pause="${esc(e.epic)}">Pause…</button> <button class="ghost" data-confirm="${esc(e.epic)}">${confirming[e.epic] ? "Cancel" : "Mark complete…"}</button></td></tr>
       ${confirming[e.epic] ? confirmRow(e, fl, tabs) : ""}`;
   }).join("");
+  const SHOW_EPIC_FILES = false;
   const files = b.epics.map(e => {
     const stuck = ["blocked", "pr-ready"].flatMap(st => (e.segments[st] || []).map(sg => ({ ...sg, st })));
     const p = e.pending && e.pending.items.length ? e.pending : null;
@@ -400,7 +415,7 @@ function render(b) {
       `<li><span class="epic">${esc(c.epic)}</span> <span class="dim">${esc(c.repo)} · completed ${ago(c.completed_at)} ago</span>
        ${c.report ? `<span class="dim"> · ${c.report.active_days}d active${c.report.held_days ? ` (+${c.report.held_days}d held)` : ""} · ${c.report.prs_merged} PRs / ${c.report.segments} segs · cycle ${c.report.cycle_h_median}h · FP r${c.report.fp_rounds_median} · ${c.report.user_decisions} asks${c.report.spend_usd != null ? ` · ~$${Math.round(c.report.spend_usd)} ($${c.report.usd_per_pr}/PR)` : ""}</span>` : ""}
        <button class="ghost" data-reopen="${esc(c.epic)}">Reopen</button></li>`).join("")}</ul></details>` : ""}
-    ${files ? `<h2 style="margin-top:18px">From epic files <span class="dim" style="text-transform:none;letter-spacing:0">· graph.json and PENDING.md are only as current as the conductor keeps them</span></h2>${files}` : ""}`;
+    ${SHOW_EPIC_FILES && files ? `<h2 style="margin-top:18px">From epic files <span class="dim" style="text-transform:none;letter-spacing:0">· graph.json and PENDING.md are only as current as the conductor keeps them</span></h2>${files}` : ""}`;
   const ee = document.getElementById("epics");
   if (ee.dataset.html !== epicsHtml) {
     const act = document.activeElement, key = act && act.dataset && act.dataset.draft, pos = key && [act.selectionStart, act.selectionEnd];
@@ -413,12 +428,19 @@ function render(b) {
   if (b.agents === null) { document.getElementById("tabs").innerHTML = `<h2>Tabs</h2><div class="dim">herdr not available</div>`; return; }
   const epicNames = b.epics.map(e => e.epic);
   const order = { blocked: 0, done: 1, working: 2, unknown: 3, idle: 4 };
-  const t = [...agents].sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9));
+  const pins = b.pins || [], pinKey = a => a.session ? "s:" + a.session : "p:" + a.pane;
+  const pinned = pins.map(k => (agents || []).find(a => pinKey(a) === k)).filter(Boolean);
+  const pinHtml = pinned.map(a => `<button class="go" data-view="${esc(a.pane)}" style="align-self:center;min-height:40px" title="${esc(a.pane)}">
+    <span class="${{ blocked: "red", done: "amber", working: "green" }[a.status] || "dim"}">●</span> ${esc(a.title && a.title !== "Claude Code" ? a.title : (a.epic || a.pane))} ›</button>`).join("");
+  const pinEl = document.getElementById("pins");
+  if (pinEl.dataset.html !== pinHtml) { pinEl.innerHTML = pinHtml; pinEl.dataset.html = pinHtml; }
+  const isPinned = a => pins.includes(pinKey(a));
+  const t = [...agents].sort((a, b) => (isPinned(b) - isPinned(a)) || ((order[a.status] ?? 9) - (order[b.status] ?? 9)));
   const cls = { blocked: "red", done: "amber", working: "green" };
   document.getElementById("tabs").innerHTML = `<h2>Tabs <span class="n">${agents.length}</span>
     <span class="dim">· ${agents.filter(a => a.status === "working").length} working · ${agents.filter(a => a.status === "idle").length} idle</span></h2>
-    <details ${t.some(a => a.status !== "idle") ? "open" : ""}><summary>show all</summary><table class="wrap"><tr><th>Pane</th><th>State</th><th>Attention</th><th>Active</th><th>Agent</th><th>Title</th><th>Epic</th><th>Dir</th></tr>
-    ${t.map(a => `<tr><td class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</td><td class="${cls[a.status] || "dim"}">${esc(a.status)}</td><td class="dim">${esc(a.attention)}</td><td class="dim">${a.last_active ? ago(a.last_active) : "?"}</td><td>${esc(a.kind)}</td>
+    <details ${t.some(a => a.status !== "idle") ? "open" : ""}><summary>show all</summary><table class="wrap"><tr><th></th><th>Pane</th><th>State</th><th>Attention</th><th>Active</th><th>Agent</th><th>Title</th><th>Epic</th><th>Dir</th></tr>
+    ${t.map(a => `<tr><td><button class="ghost" data-pin="${esc(pinKey(a))}" data-on="${isPinned(a) ? "" : "1"}" title="${isPinned(a) ? "Unpin" : "Pin to the top bar"}">${isPinned(a) ? "★" : "☆"}</button></td><td class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</td><td class="${cls[a.status] || "dim"}">${esc(a.status)}</td><td class="dim">${esc(a.attention)}</td><td class="dim">${a.last_active ? ago(a.last_active) : "?"}</td><td>${esc(a.kind)}</td>
       <td>${esc(a.title)}</td><td>${a.role === "lead" ? `<span class="tag">lead</span> ${esc(a.epic)}` : linkSelect(a.pane, a.linked ? a.epic : "", epicNames)}${a.epic && !a.linked ? ` <span class="dim" style="font-size:11px">guess: ${esc(a.epic)}</span>` : ""}</td><td class="dim mono">${esc(a.cwd)}</td></tr>`).join("")}</table></details>`;
 }
 
@@ -448,6 +470,12 @@ document.addEventListener("click", async e => {
     return;
   }
   if (ds.pick) { picks[ds.pick] = picks[ds.pick] === ds.key ? undefined : ds.key; last && (document.getElementById("needs").dataset.html = "", render(last)); return; }
+  if (ds.pin) {
+    t.disabled = true;
+    try { await post("/api/pin", { key: ds.pin, on: !!ds.on }); tick(); }
+    catch (err) { t.disabled = false; alert(err.message); }
+    return;
+  }
   if (ds.snooze) {
     t.disabled = true;
     try { await post("/api/snooze", { key: ds.snooze, for: ds.for }); tick(); }

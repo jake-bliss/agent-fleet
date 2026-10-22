@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""adw-disk-check: write $ADW_HOME/disk.json with root-filesystem usage; the board alerts past ADW_DISK_ALERT_PCT."""
+import json, os, shutil, time
+
+adw = os.environ.get("ADW_HOME") or os.path.expanduser("~/.claude/adw")
+u = shutil.disk_usage("/")
+d = {"at": time.time(), "host_pct": round(100 * u.used / u.total, 1), "host_free_g": u.free // 2**30}
+tmp = f"{adw}/disk.json.tmp"
+json.dump(d, open(tmp, "w"))
+os.replace(tmp, f"{adw}/disk.json")

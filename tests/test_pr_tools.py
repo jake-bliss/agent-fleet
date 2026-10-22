@@ -6,6 +6,9 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -945,6 +948,81 @@ class DeployedWaitTest(unittest.TestCase):
         runs[0]["conclusion"] = "success"
         with mock.patch.object(ps, "gh_rest", lambda p: {"workflow_runs": runs}):
             self.assertEqual(ps.post_merge_runs("o/r", "abc")["deploys_ok"], 1)
+
+
+class MergeFreezeTest(unittest.TestCase):
+    def freeze(self, content):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "freeze.json")
+        if content is not None:
+            with open(path, "w") as f:
+                f.write(content)
+        return mock.patch.dict(os.environ, {"PR_SHIP_FREEZE_FILE": path})
+
+    def test_no_file_means_no_freeze(self):
+        with self.freeze(None):
+            self.assertIsNone(ship.merge_freeze("acme/app"))
+
+    def test_listed_repo_is_frozen_with_reason(self):
+        with self.freeze('{"repos": ["acme/app"], "reason": "release"}'):
+            self.assertEqual(ship.merge_freeze("acme/app"), "release")
+            self.assertIsNone(ship.merge_freeze("acme/api"))
+
+    def test_unreadable_file_freezes(self):
+        with self.freeze("{nope"):
+            self.assertEqual(ship.merge_freeze("acme/app"), "freeze file unreadable")
+
+    def test_frozen_repo_makes_no_mutation(self):
+        calls = []
+        with self.freeze('{"repos": ["acme/app"], "reason": "release"}'), \
+                mock.patch.object(ship.ps, "build", lambda r, n, runs=False: info()), \
+                mock.patch.object(ship.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or mock.Mock(returncode=0)), \
+                mock.patch("builtins.print"):
+            code = ship.main(["7", "-R", "acme/app"])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(calls, [])
+
+
+class WaitAnyTest(unittest.TestCase):
+    def run_wait(self, any_flag, merged_numbers):
+        def i(n):
+            return {"state": "merged" if n in merged_numbers else "open", "draft": False, "repo": "o/r", "number": n,
+                    "head": "abcdef0", "title": "t", "open_threads": 0,
+                    "ci": {"total": 1, "ok": 1, "pending": 0, "failed": []}, "bot": {"status": "n/a", "approved": False},
+                    "review_decision": None, "merge_state": None, "merge_commit": None,
+                    "post_merge": {"total": 0, "pending": 0, "deploys": 0, "deploys_pending": 0, "superseded": 0,
+                                   "deploys_ok": 0, "failed": []}}
+        args = mock.Mock(timeout=0, interval=1, json=False)
+        args.any = any_flag
+        with mock.patch.object(ps, "snapshot", lambda t, r: [i(1), i(2)]), mock.patch.object(ps.time, "sleep"), \
+                contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            return ps.wait([("o/r", 1), ("o/r", 2)], "merged", args)
+
+    def test_any_returns_when_one_met(self):
+        self.assertEqual(self.run_wait(True, {2}), 0)
+
+    def test_without_any_waits_for_all(self):
+        self.assertEqual(self.run_wait(False, {2}), 1)
+
+
+class ModelPinTest(unittest.TestCase):
+    HOOK = os.path.join(HERE, "..", "hooks", "model-pin.py")
+
+    def run_hook(self, **inp):
+        out = subprocess.run([sys.executable, self.HOOK], input=json.dumps({"tool_input": inp}),
+                             capture_output=True, text=True).stdout
+        return json.loads(out) if out.strip() else None
+
+    def test_opus_conductor_denied(self):
+        r = self.run_hook(subagent_type="adw-conductor", model="opus", description="build segment", prompt="x")
+        self.assertEqual(r["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_opus_conductor_allowed_for_redesign(self):
+        self.assertIsNone(self.run_hook(subagent_type="adw-conductor", model="opus", description="redesign segment", prompt="x"))
+
+    def test_opus_worker_denied_even_for_redesign(self):
+        r = self.run_hook(subagent_type="worker", model="opus", description="redesign", prompt="x")
+        self.assertEqual(r["hookSpecificOutput"]["permissionDecision"], "deny")
 
 
 if __name__ == "__main__":

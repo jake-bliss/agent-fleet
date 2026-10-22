@@ -44,7 +44,12 @@ def agent_type(f):
 
 def scan(start, end):
     rows = []
+    seen_files = set()
     for f in glob.glob(os.path.expanduser("~/.claude/projects/**/*.jsonl"), recursive=True):
+        real = os.path.realpath(f)
+        if real in seen_files:
+            continue
+        seen_files.add(real)
         try:
             if os.path.getmtime(f) < start:
                 continue

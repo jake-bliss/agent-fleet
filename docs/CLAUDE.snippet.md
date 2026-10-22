@@ -57,8 +57,11 @@ only what you need, which keeps context small, and they enforce the safe form.
   cancelled/superseded (check the default branch's latest deploy covers the commit; not an escalation).
 - `pr-reply <pr> <comment-url|comment-id|thread-id> "<body>" [--resolve]` answers a review thread; `pr-ship <pr>` squash-merges only when
   the merge rules in `$ADW_HOME/pr-tools.json` hold, and refuses everything without that file.
+- `pr-state <pr> --any` with `--wait` returns as soon as any one condition is met.
 - `codex-review diff|plan|ask` runs the second-model review with the contract and lenses attached.
 - `efficiency-report` shows where the context spend went.
+- `adw-tick` is the cheap wake check for a lead tab; `claude-review` runs the Claude-side review headlessly
+  and writes the verdict file.
 
 The `tool-adoption` hook (`docs/hooks.md`) denies the raw form of these and names the tool.
 
@@ -142,13 +145,15 @@ already known locally, never to discover it. Before any branch is pushed:
 
 ```bash
 ci-preflight                                       # the repo's own PR CI, run locally, in CI's order
-review-receipt claude pass "<what the reviewer found>" --found 2 --unique 1 --sev med
-review-receipt codex  pass "<what Codex found>"
+review-receipt claude pass "<what the reviewer found>" --report <verdict file> --found 2 --unique 1 --sev med
+review-receipt codex  pass "<what Codex found>" --report <codex-review output file>
 git push                                           # the pre-push hook verifies all three
 ```
 
 (`--found`, `--unique` and `--sev` feed a review ledger: adjudicated-real findings, how many the other
-model missed, worst severity. `review-receipt --ledger` summarises it.)
+model missed, worst severity. `review-receipt --ledger` summarises it. `--report` points at the verdict
+file the review wrote; a `pass` without one is recorded as "unverified", or refused when
+`REVIEW_RECEIPT_ENFORCE=1`.)
 
 The hook blocks the push unless local CI is green on the exact SHA, Codex passed the exact SHA, and
 the Claude review passed this SHA or an ancestor of it. `--quick` runs give `partial`, which the hook

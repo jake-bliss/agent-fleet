@@ -61,10 +61,12 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `skills/adw/` | `/adw` — one segment to a merged PR |
 | `skills/adw-lead/` | `/adw-lead` — the epic conductor |
 | `skills/first-mate/`, `skills/continue/` | the fleet overseer tab, and jumping to one board item |
-| `board/` | the ADW Board, `adw-ask` (decision queue), `adw-status` (tab state) |
+| `skills/retro/`, `skills/efficiency-review/`, `skills/herdr/` | session retrospective, weekly spend review, driving herdr |
+| `board/` | the ADW Board, `adw-ask` (decision queue), `adw-status` (tab state), `adw-epic-report` (per-epic cost and cycle report) |
 | `bin/` | `cow-worktree`, `ci-preflight`, `review-receipt`, the pre-push gate, `adw-lead-state`, pruning |
 | `bin/pr-state`, `pr-ship`, `pr-reply` | PR CI/review/merge state, rule-gated merge, review-thread replies; configured by `$ADW_HOME/pr-tools.json` |
-| `bin/codex-review`, `efficiency-report` | second-model review, context-spend report |
+| `bin/codex-review`, `claude-review`, `efficiency-report` | second-model review, headless Claude review (both write a verdict file for `review-receipt --report`), context-spend report |
+| `bin/adw-tick`, `adw-disk-check` | cheap lead wake check; host disk reading the board alerts on |
 | `hooks/` | `tool-adoption`, `model-pin`, `cross-model-review` Claude Code hooks, and herdr's state hook; see `docs/hooks.md` |
 | `tests/` | `test_pr_tools.py` |
 | `review/` | the shared review contract and the lenses reviewers apply |

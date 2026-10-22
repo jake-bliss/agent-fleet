@@ -126,7 +126,8 @@ def pr_state(slug, pr):
 
 if mode == "reconcile":
     for s in segs:
-        if s.get("pr"):
+        if s.get("pr") and (s["status"] in ("pr-open", "pr-ready", "building", "blocked", "ready", "pending")
+                            or s["status"].startswith("approved")):
             st = pr_state(repo_slug(s.get("repo")), s["pr"])
             if st:
                 s["status"] = st
