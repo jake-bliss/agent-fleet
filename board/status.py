@@ -49,18 +49,26 @@ def session_for(pane):
     return (a.get("agent_session") or {}).get("value")
 
 
-def session_live(session):
-    r = subprocess.run(["herdr", "agent", "list"], capture_output=True, text=True, timeout=15)
-    if r.returncode != 0:
-        return False
-    return any((x.get("agent_session") or {}).get("value") == session for x in json.loads(r.stdout)["result"]["agents"])
-
-
-def rebind_asks(epic, prev, session, pane):
+def load_asks():
     import importlib.util
     spec = importlib.util.spec_from_file_location("asks", Path(__file__).resolve().parent / "asks.py")
     asks = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(asks)
+    return asks
+
+
+def session_live(session):
+    asks = load_asks()
+    for machine in [None, *asks.live_remotes()]:
+        out, _ = asks.herdr("agent", "list", machine=machine)
+        if out and any((x.get("agent_session") or {}).get("value") == session
+                       for x in json.loads(out)["result"]["agents"]):
+            return True
+    return False
+
+
+def rebind_asks(epic, prev, session, pane):
+    asks = load_asks()
     try:
         logged = (EPICS / epic / "decisions.md").read_text()
     except OSError:

@@ -101,12 +101,11 @@ def pane_ref(pane):
 
 def herdr_cmd(args, machine=None):
     args = list(args)
-    for i, a in enumerate(args):
-        m = REMOTE_PANE.fullmatch(a) if isinstance(a, str) else None
-        if m and m.group(1) == MACHINE:
-            args[i] = m.group(2)
-        elif m and m.group(1) in REMOTE_HERDR:
-            machine, args[i] = m.group(1), m.group(2)
+    m = REMOTE_PANE.fullmatch(args[2]) if len(args) > 2 and args[0] in ("agent", "pane") else None
+    if m and m.group(1) == MACHINE:
+        args[2] = m.group(2)
+    elif m and m.group(1) in REMOTE_HERDR:
+        machine, args[2] = m.group(1), m.group(2)
     env = {**os.environ, "HERDR_SOCKET_PATH": str(REMOTE_HERDR[machine])} if machine else None
     return ["herdr", *args], env
 

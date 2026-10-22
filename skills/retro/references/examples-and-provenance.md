@@ -1,6 +1,6 @@
 # Retro examples and provenance
 
-Adapted from an open-source `retro` skill, with two additions marked [LOCAL] that exist because these gaps cost real time (steps 1 and the "Unverified assertion" category).
+Adapted from an open-source `retro` skill (github.com/mattpocock/skills), with two additions marked [LOCAL] that exist because these gaps cost real time (steps 1 and the "Unverified assertion" category).
 
 Unverified assertion has been the most expensive failure mode twice: mechanism asserted from reading part of the code (the routing but not the index; the happy path but not the raise).
 

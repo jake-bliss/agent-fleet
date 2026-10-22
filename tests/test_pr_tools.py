@@ -985,8 +985,11 @@ class MergeFreezeTest(unittest.TestCase):
 
 class WaitAnyTest(unittest.TestCase):
     def run_wait(self, any_flag, merged_numbers):
+        return self.run_wait_states(any_flag, ["merged" if n in merged_numbers else "open" for n in (1, 2)])
+
+    def run_wait_states(self, any_flag, states):
         def i(n):
-            return {"state": "merged" if n in merged_numbers else "open", "draft": False, "repo": "o/r", "number": n,
+            return {"state": states[n - 1], "draft": False, "repo": "o/r", "number": n,
                     "head": "abcdef0", "title": "t", "open_threads": 0,
                     "ci": {"total": 1, "ok": 1, "pending": 0, "failed": []}, "bot": {"status": "n/a", "approved": False},
                     "review_decision": None, "merge_state": None, "merge_commit": None,
@@ -1026,12 +1029,17 @@ class ModelPinTest(unittest.TestCase):
 
 
 class MachineRoutingTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
+    @staticmethod
+    def asks_module():
         loader = importlib.machinery.SourceFileLoader("adw_asks", os.path.join(HERE, "..", "board", "asks.py"))
         spec = importlib.util.spec_from_loader(loader.name, loader)
-        cls.asks = importlib.util.module_from_spec(spec)
-        loader.exec_module(cls.asks)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+
+    @classmethod
+    def setUpClass(cls):
+        cls.asks = cls.asks_module()
 
     def patched(self, machine=None, remotes=("node1",)):
         a = self.asks
@@ -1064,6 +1072,26 @@ class MachineRoutingTest(unittest.TestCase):
             self.assertEqual(self.asks.pane_ref("laptop/w1:p2"), "laptop/w1:p2")
         with self.patched(machine=None):
             self.assertEqual(self.asks.pane_ref("w1:p2"), "w1:p2")
+
+
+class ReviewFixesTest(unittest.TestCase):
+    def test_freeze_with_empty_reason_still_freezes(self):
+        d = tempfile.mkdtemp()
+        path = os.path.join(d, "f.json")
+        with open(path, "w") as f:
+            f.write('{"repos": ["acme/app"], "reason": ""}')
+        with mock.patch.dict(os.environ, {"PR_SHIP_FREEZE_FILE": path}):
+            self.assertEqual(ship.merge_freeze("acme/app"), "frozen")
+
+    def test_any_wait_met_beats_another_prs_failure(self):
+        self.assertEqual(WaitAnyTest().run_wait_states(True, ["merged", "closed"]), 0)
+
+    def test_routing_ignores_message_text(self):
+        a = MachineRoutingTest.asks_module()
+        with mock.patch.multiple(a, MACHINE=None, REMOTE_HERDR={"node1": a.Path("/x/node1.sock")}):
+            cmd, env = a.herdr_cmd(["agent", "prompt", "w1:p2", "node1/w1:p9"])
+        self.assertEqual(cmd, ["herdr", "agent", "prompt", "w1:p2", "node1/w1:p9"])
+        self.assertIsNone(env)
 
 
 if __name__ == "__main__":

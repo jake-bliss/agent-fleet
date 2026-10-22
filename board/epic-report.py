@@ -68,7 +68,7 @@ def pr_numbers(pr):
         return [pr]
     if isinstance(pr, list):
         return [n for p in pr for n in pr_numbers(p)]
-    return [int(n) for n in re.findall(r"\d{3,}", str(pr or ""))]
+    return [int(n) for n in re.findall(r"\d+", str(pr or ""))]
 
 
 def iso_ts(s):
@@ -190,7 +190,7 @@ def report(slug, with_spend=True):
         prs = [p for p in pool.map(lambda t: pr_facts(*t), targets) if p]
     merged = [p for p in prs if p["merged"]]
     plan = d / "plan.md"
-    born = min(x.stat().st_birthtime for x in (plan, d / "graph.json") if x.exists())
+    born = min(getattr(x.stat(), "st_birthtime", None) or x.stat().st_mtime for x in (plan, d / "graph.json") if x.exists())
     # PRs opened long before the plan were adopted, not built by the epic; they don't move its start.
     start = min([born] + [p["created"] for p in prs if p["created"] >= born - 14 * 86400])
     all_done = bool(segs) and all(s.get("status") in DONE | DROPPED for s in segs)

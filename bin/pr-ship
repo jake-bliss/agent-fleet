@@ -66,7 +66,7 @@ def merge_freeze(repo):
             cfg = json.load(f)
     except (OSError, ValueError):
         return "freeze file unreadable"
-    return cfg.get("reason", "frozen") if repo in cfg.get("repos", []) else None
+    return (cfg.get("reason") or "frozen") if repo in cfg.get("repos", []) else None
 
 
 TOKEN = re.compile(r"ship\s+([A-Za-z0-9._-]+)#([1-9]\d*)@([0-9a-f]{7,40})(?![\w-])")

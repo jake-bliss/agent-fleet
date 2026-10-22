@@ -32,6 +32,9 @@ MERGE_BASE="$(git -C "$WORKTREE" merge-base HEAD "$BASE_REF")" || {
   echo "cannot resolve merge-base for $BASE_REF in $WORKTREE" >&2
   exit 1
 }
+BEFORE_STATUS="$(git -C "$WORKTREE" status --porcelain=v1)"
+[ -z "$BEFORE_STATUS" ] || { echo "worktree is dirty; commit or stash first so the verdict applies to HEAD" >&2; exit 1; }
+HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD)"
 DIFF_FILE="$OUTPUT_DIR/.adw-review-diff-$$.patch"
 trap 'rm -f "$DIFF_FILE"' EXIT INT TERM
 if [ -n "$SINCE" ]; then
@@ -39,16 +42,14 @@ if [ -n "$SINCE" ]; then
     echo "cannot resolve reviewed snapshot: $SINCE" >&2
     exit 1
   }
-  git -C "$WORKTREE" --no-pager diff "$SINCE" > "$DIFF_FILE"
+  git -C "$WORKTREE" --no-pager diff "$SINCE" "$HEAD_SHA" > "$DIFF_FILE"
   [ -s "$DIFF_FILE" ] || { echo "fix delta is empty since $SINCE" >&2; exit 1; }
   SCOPE="This is a FIX-LOOP round. The full change (merge base $MERGE_BASE) was already reviewed at snapshot $SINCE. The diff artifact holds ONLY the fix made since then. Review that fix: does it close the defect it targets, and does it introduce a new one? Read surrounding code and callsites as needed, but do not re-review unchanged parts of the branch."
 else
-  git -C "$WORKTREE" --no-pager diff "$MERGE_BASE" > "$DIFF_FILE"
+  git -C "$WORKTREE" --no-pager diff "$MERGE_BASE" "$HEAD_SHA" > "$DIFF_FILE"
   [ -s "$DIFF_FILE" ] || { echo "review diff is empty against $BASE_REF" >&2; exit 1; }
   SCOPE="This is the first review round over the full change since the merge base."
 fi
-BEFORE_STATUS="$(git -C "$WORKTREE" status --porcelain=v1)"
-HEAD_SHA="$(git -C "$WORKTREE" rev-parse HEAD)"
 
 read -r -d '' PROMPT <<PROMPT || true
 You are the independent adversarial reviewer in an ADW pipeline. You did not write this change and you have intentionally NOT been given its brief. Infer intent from the repository and diff, then attack the implementation for concrete defects.

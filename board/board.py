@@ -89,7 +89,7 @@ def set_snooze(key, until):
 
 
 PINS = ADW_HOME / "board-pins.json"
-PIN_KEY = re.compile(r"(s:[A-Za-z0-9_-]{1,64}|p:w\w+:p\w+)")
+PIN_KEY = re.compile(r"(s:[A-Za-z0-9_-]{1,64}|p:(?:\w+/)?w\w+:p\w+)")
 
 
 def load_pins():
@@ -786,7 +786,7 @@ def serve(args):
             d = asks.record_answer(body["id"], body.get("choice", ""), body.get("note", ""))
             return {"delivered": bool(d.get("delivered")), "delivery_error": d.get("delivery_error")}
         pane = body.get("pane", "")
-        if not re.fullmatch(r"w\w+:p\w+", pane):
+        if not PANE_ID.fullmatch(pane):
             raise ValueError("bad pane id")
         if route == "/api/focus":
             _, err = asks.herdr("agent", "focus", pane)

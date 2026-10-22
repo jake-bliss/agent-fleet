@@ -69,7 +69,7 @@ def main():
         if log.exists():
             lines = [l for l in log.read_text().splitlines() if l.strip()]
             wait = lines[-1] if lines else ""
-    for n in re.findall(r"#(\d{3,6})", wait):
+    for n in re.findall(r"#(\d+)", wait):
         prs.setdefault(g["repo"], set()).add(int(n))
 
     out.append("## prs")
@@ -104,8 +104,9 @@ def main():
     out.append("  " + (wait or "none"))
 
     out.append("## background on this host")
-    ps = run(["pgrep", "-af", r"ci-preflight|codex-review|pr-state .*--wait"], 10).splitlines()
-    ps = [l for l in ps if not re.search(r"zsh -c|pgrep|adw-tick|exec -C|node_modules", l)]
+    ps = [l for l in run(["ps", "-axo", "pid=,command="], 10).splitlines()
+          if re.search(r"ci-preflight|codex-review|pr-state .*--wait", l)]
+    ps = [l for l in ps if not re.search(r"zsh -c|ps -axo|adw-tick|exec -C|node_modules", l)]
     nums = {str(n) for v in prs.values() for n in v}
     waits = {}
     for l in ps:

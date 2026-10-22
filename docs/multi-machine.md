@@ -16,7 +16,7 @@ node1: agents + their own herdr          <- hub reaches it at ~/.config/herdr/re
 ## Configure the hub
 
 1. Name the other machines: `export ADW_MACHINES="laptop,node1"`, or put `{"machines": ["laptop", "node1"]}` in
-   `$ADW_HOME/machines.json` (`config/machines.example.json`). Names are single words (`\w+`).
+   `$ADW_HOME/machines.json` (`config/machines.example.json` ships with an empty list). Names are single words (`\w+`).
 2. For each name, make that machine's herdr socket appear at `~/.config/herdr/remote/<name>.sock` on the hub
    (override the directory with `ADW_HERDR_REMOTE_DIR`). Forward it over ssh, for example
    `ssh -N -L ~/.config/herdr/remote/node1.sock:<path to herdr.sock on the node> <node>`; keep the tunnel

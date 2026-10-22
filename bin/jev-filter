@@ -14,6 +14,17 @@ Config (no default host; the tool exits if the endpoint or key is unset):
   JEV_FILTER_MODEL      model name sent with each request (default "jev-latest")
   JEV_FILTER_USD_PER_MTOK  optional input price, only for the cost shown in the summary line
 
+Wire format. The endpoint must accept this service's schema; it is not a generic API:
+  POST JEV_FILTER_ENDPOINT, "Authorization: Bearer <key>", JSON body
+    {"state": {"investigation": <question>}, "model": <model>,
+     "questions": {"h<N>": {"type": "noul",
+                            "instructions": {"investigation_question", "candidate", "question"},
+                            "criteria": {"true": <text>, "false": <text>}}, ...}}   (<= 75 questions per request)
+  Response JSON
+    {"answers": {"h<N>": {"noul": <float 0..1>}, ...}, "usage": {"input_tokens": <int>}}
+  HTTP 429 is retried using the retry-after header. A different scoring service needs a small adapter
+  in front of it that speaks this shape.
+
 Why this exists: context is re-read on every turn, so a file you open and do
 not need costs its own size times every remaining turn. Scoring candidates
 out-of-context is far cheaper than reading them in.

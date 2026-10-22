@@ -527,6 +527,8 @@ def wait(targets, cond, args):
             emit(infos, args.json)
             shown = text
             delay = args.interval or 30
+        if all(s == "met" for s in statuses) or (args.any and "met" in statuses):
+            return 0
         if "impossible" in statuses:
             return 2
         if "undeployed" in statuses:
@@ -535,8 +537,6 @@ def wait(targets, cond, args):
                 if i.get("deploy_reason"):
                     print(f"pr-state: not deployed by this commit's runs: {i['deploy_reason']}; verify", file=sys.stderr)
             return 4
-        if all(s == "met" for s in statuses) or (args.any and "met" in statuses):
-            return 0
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return 1
