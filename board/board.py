@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """adw-board: one view of what every epic and agent tab needs from you.
 
-Usage: adw-board [--days N] [--all] [--full] [--json] [--no-herdr]
+Usage: adw-board needs                                  the Needs-you list, one item per line
+       adw-board [--days N] [--all] [--full] [--json] [--no-herdr]
        adw-board --serve [PORT]                      web board on 127.0.0.1 (default 4518)
        adw-board digest | show <decision id | pane | epic> | watch
 
@@ -17,6 +18,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import importlib.util
+import io
 import secrets
 import shutil
 import json
@@ -32,6 +34,7 @@ from pathlib import Path
 ADW_HOME = Path(os.environ.get("ADW_HOME") or Path.home() / ".claude/adw")
 EPICS = ADW_HOME / "epics"
 IN_FLIGHT = ("building", "pr-open")
+SEGMENT_STATUSES = ("building", "pr-open", "pr-ready", "in_progress", "ready", "pending", "queued", "blocked", "held", "parked")
 NEEDS_YOU = ("blocked", "pr-ready")
 PENDING_STALE_DAYS = 3
 PENDING_SHOWN = 5
@@ -142,6 +145,44 @@ SPAWNED_SETTINGS = ADW_HOME / "spawned-settings.json"
 
 def launch_args():
     return [*LAUNCH_ARGS, "--settings", str(SPAWNED_SETTINGS)] if SPAWNED_SETTINGS.is_file() else list(LAUNCH_ARGS)
+
+
+_events = None
+
+
+def events_mod():
+    global _events
+    if _events is None:
+        spec = importlib.util.spec_from_file_location("adw_events", Path(__file__).resolve().parent / "events.py")
+        _events = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_events)
+    return _events
+
+
+def event_state():
+    try:
+        ev = events_mod()
+        db = ev.connect()
+        try:
+            return ev.open_interrupts(db), ev.last_events(db), ev.cleared_interrupts(db)
+        finally:
+            db.close()
+    except Exception:
+        return [], {}, []
+
+
+def client_time():
+    try:
+        ev = events_mod()
+        db = ev.connect()
+        try:
+            return ev.client_time(db, ev.load_config())
+        finally:
+            db.close()
+    except Exception:
+        return {"pending": [], "authorized": [], "unconfirmed": [], "recent": []}
+
+
 WAIT_GRACE = 15 * 60
 WAIT_MAX = 120 * 60
 RESUMED_SLACK = 90
@@ -236,7 +277,7 @@ def load_epic(d):
         "mtime": latest_mtime(d),
         "counts": {k: len(v) for k, v in by.items()},
         "segments": {k: [{"id": s["id"], "pr": s.get("pr"), "note": s.get("note")} for s in v]
-                     for k, v in by.items() if k in IN_FLIGHT + NEEDS_YOU + ("ready",)},
+                     for k, v in by.items() if k in SEGMENT_STATUSES},
         "pending": pending,
         "tokens": sorted(tokens),
     }
@@ -472,12 +513,41 @@ def build(args):
     since = time.time() - ANSWERED_SHOWN_HOURS * 3600
     decisions = [d for d in asks.all_asks()
                  if d["status"] == "open" or (d.get("answer") or {}).get("at", 0) >= since]
-    return {"generated": int(time.time()), "epics": epics, "agents": agents, "decisions": decisions,
+    interrupts, last_events, cleared = event_state()
+    b = {"generated": int(time.time()), "epics": epics, "agents": agents, "decisions": decisions,
+            "interrupts": interrupts, "cleared": cleared, "last_events": last_events, "client_time": client_time(),
             "ask_fresh_hours": ASK_FRESH_HOURS, "snoozes": load_snoozes(), "pins": load_pins(), "no_herdr": args.no_herdr,
             "completed": sorted(completed, key=lambda c: -c["completed_at"]),
             "mate": mate_digest(),
             "mate_pane": next((a["pane"] for a in agents or [] if a["kind"] == "claude" and a["session"]
                                and is_mate_session(a["session"])), None)}
+    b["needs"] = needs_you(b)
+    return b
+
+
+def needs_you(b):
+    out = []
+    for d in b.get("decisions") or []:
+        if d["status"] == "open" and not snoozed(b, "d:" + d["id"]):
+            out.append({"key": "d:" + d["id"], "kind": "decision", "id": d["id"], "title": d["title"], "age": d.get("created"),
+                        "epic": d.get("epic"), "source": "decision"})
+    for i in b.get("interrupts") or []:
+        if i["kind"] != "ticket.authorize":
+            out.append({"key": f"i:{i['id']}", "kind": "interrupt", "id": i["id"], "title": i["title"], "age": i.get("created"),
+                        "epic": i.get("epic"), "source": i["source"], "count": i.get("count", 1), "reopened_by": i.get("reopened_by"),
+                        "reopened_at": i.get("reopened_at")})
+    ct = b.get("client_time") or {}
+    for t in ct.get("pending") or []:
+        out.append({"key": "t:" + str(t["item_id"]), "kind": "authorize", "id": str(t["item_id"]),
+                    "title": f"{t.get('client')}: {t.get('title')}", "age": t.get("requested_at"), "epic": None, "source": "ticket"})
+    for r in ct.get("unconfirmed") or []:
+        out.append({"key": "h:" + str(r.get("id")), "kind": "hours", "id": r.get("id"), "title": r.get("title"), "age": None,
+                    "epic": None, "source": "client_time", "client": r.get("client"), "hours": r.get("hours")})
+    for a in b.get("agents") or []:
+        if a["attention"] == "blocked" and not snoozed(b, dialog_key(a)):
+            out.append({"key": dialog_key(a), "kind": "dialog", "id": a["pane"], "title": a["title"], "age": a.get("last_active"),
+                        "epic": a.get("epic"), "source": "agent", "pane": a["pane"]})
+    return out
 
 
 def seg_list(segs):
@@ -701,6 +771,43 @@ def serve(args):
                 return self.send(200, "application/json", json.dumps(workspaces()).encode())
             if path == "/api/board":
                 return self.send(200, "application/json", board_json())
+            if path == "/api/timelog.csv":
+                from urllib.parse import parse_qs, urlsplit
+                q = parse_qs(urlsplit(self.path).query)
+                try:
+                    days = [q.get(k, [""])[0] or None for k in ("from", "to")]
+                    for d in days:
+                        if d:
+                            datetime.strptime(d, "%Y-%m-%d")
+                    ev = events_mod()
+                    db = ev.connect()
+                    try:
+                        buf = io.StringIO()
+                        ev.timelog_csv(ev.timelog(db, *days), buf)
+                    finally:
+                        db.close()
+                except ValueError as e:
+                    return self.send(400, "application/json", json.dumps({"error": str(e)}).encode())
+                return self.send(200, "text/csv; charset=utf-8", buf.getvalue().encode())
+            if path in ("/api/feed", "/api/tldr"):
+                from urllib.parse import parse_qs, urlsplit
+                q = parse_qs(urlsplit(self.path).query)
+                epic = q.get("epic", [""])[0]
+                try:
+                    after = int(q.get("after_id", ["0"])[0])
+                    upto = int(q["upto"][0]) if q.get("upto") else None
+                    if epic and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", epic):
+                        raise ValueError("bad epic")
+                    ev = events_mod()
+                    db = ev.connect()
+                    try:
+                        res = (ev.feed(db, after, epic or None, order="asc" if q.get("order") == ["asc"] else "desc")
+                               if path == "/api/feed" else ev.tldr(db, after, upto))
+                    finally:
+                        db.close()
+                except (ValueError, OSError) as e:
+                    return self.send(400, "application/json", json.dumps({"error": str(e)}).encode())
+                return self.send(200, "application/json", json.dumps(res).encode())
             self.send(404, "text/plain", b"not found\n")
 
         def do_POST(self):
@@ -782,6 +889,34 @@ def serve(args):
             key = body.get("key", "")
             set_snooze(key, None if body.get("for") == "off" else snooze_until(body.get("for")))
             return {"ok": True}
+        if route == "/api/interrupt-ack":
+            ev = events_mod()
+            db = ev.connect()
+            try:
+                return {"ok": ev.ack_interrupt(db, int(body["id"]), "owner")}
+            finally:
+                db.close()
+        if route == "/api/interrupt-reopen":
+            ev = events_mod()
+            db = ev.connect()
+            try:
+                return {"ok": ev.reopen_interrupt(db, int(body["id"]), "owner")}
+            finally:
+                db.close()
+        if route in ("/api/ticket-decision", "/api/work-confirm", "/api/work-log"):
+            ev = events_mod()
+            db = ev.connect()
+            try:
+                if route == "/api/ticket-decision":
+                    return ev.decide_ticket(db, str(body.get("item_id", "")),
+                                            {"authorize": "authorized", "authorized": "authorized", "deny": "denied",
+                                             "denied": "denied"}.get(body.get("decision")))
+                if route == "/api/work-confirm":
+                    return {"ok": True, "hours": ev.confirm_work(db, body["id"], body.get("hours"))}
+                ev.work_log_own(db, ev.load_config(), str(body.get("item_id", "")), body.get("hours"), body.get("note") or "")
+                return {"ok": True}
+            finally:
+                db.close()
         if route == "/api/answer":
             d = asks.record_answer(body["id"], body.get("choice", ""), body.get("note", ""))
             return {"delivered": bool(d.get("delivered")), "delivery_error": d.get("delivery_error")}
@@ -835,15 +970,37 @@ def ago_s(ts):
     return age(ts) + " ago" if ts else "unknown"
 
 
+def untrusted(title, cap=120):
+    return "untrusted title: " + json.dumps(" ".join(str(title).split())[:cap])
+
+
+def interrupt_key(n):
+    return f"interrupt:{n['id']}" + (f":r{int(n['reopened_at'])}" if n.get("reopened_at") else "")
+
+
+def interrupt_line(n):
+    flag = f" reopened by {n['reopened_by']}: do not clear" if n.get("reopened_by") else ""
+    count = f" x{n['count']}" if n.get("count", 1) > 1 else ""
+    return (f"needs-you interrupt {n['id']} [{n.get('epic') or '-'}] [{n['source']}]{flag}{count} "
+            f"{untrusted(n['title'])}")
+
+
 def mate_events(b):
     ev = {}
-    for d in b.get("decisions", []):
-        if d["status"] == "open" and not snoozed(b, "d:" + d["id"]):
-            ev[f"decision:{d['id']}"] = f"needs-you decision {d['id']} [{d.get('epic') or '-'}] {d['title']}"
+    agents = {a["pane"]: a for a in b.get("agents") or []}
+    for n in needs_you(b):
+        if n["kind"] == "decision":
+            ev[f"decision:{n['id']}"] = f"needs-you decision {n['id']} [{n.get('epic') or '-'}] {n['title']}"
+        elif n["kind"] == "interrupt":
+            ev[interrupt_key(n)] = interrupt_line(n)
+        elif n["kind"] == "dialog":
+            a = agents[n["pane"]]
+            ev[f"dialog:{a.get('session') or a['pane']}"] = f"needs-you dialog {a['pane']} {a['title']}{role_s(a)}"
+    for i in b.get("interrupts") or []:
+        if i["kind"] == "ticket.authorize":
+            ev[interrupt_key(i)] = interrupt_line(i)
     for a in b.get("agents") or []:
         key = a.get("session") or a["pane"]
-        if a["attention"] == "blocked" and not snoozed(b, dialog_key(a)):
-            ev[f"dialog:{key}"] = f"needs-you dialog {a['pane']} {a['title']}{role_s(a)}"
         w = a.get("watch")
         if w and w["state"] in ("stopped-silent", "overdue", "failed", "done"):
             kind = "ready" if w["state"] == "done" else "trouble"
@@ -875,12 +1032,32 @@ def mate_events(b):
     return ev
 
 
+def needs_text(items):
+    lines = [f"Needs you ({len(items)})"]
+    for n in items:
+        count = f" x{n['count']}" if n.get("count", 1) > 1 else ""
+        age_s = age(n["age"]) if n["age"] else "-"
+        title = untrusted(n["title"]) if n["kind"] in ("interrupt", "authorize") else " ".join(str(n["title"]).split())[:120]
+        lines.append(f"{n['key']}\t{n['kind']}\t[{n.get('epic') or '-'}] [{n['source']}] {title}{count}\t{age_s}")
+    return "\n".join(lines) + "\n"
+
+
 def digest(b):
     out = []
-    needs = [f"- decision `{d['id']}` [{d.get('epic') or '-'}] {d['title']} ({ago_s(d['created'])})"
-             for d in b.get("decisions", []) if d["status"] == "open" and not snoozed(b, "d:" + d["id"])]
-    needs += [f"- dialog `{a['pane']}` {a['title']} (active {ago_s(a.get('last_active'))})"
-              for a in b.get("agents") or [] if a["attention"] == "blocked" and not snoozed(b, dialog_key(a))]
+    needs, hrs = [], {}
+    for n in needs_you(b):
+        when = f" ({ago_s(n['age'])})" if n["age"] else ""
+        if n["kind"] == "decision":
+            needs.append(f"- decision `{n['id']}` [{n.get('epic') or '-'}] {n['title']}{when}")
+        elif n["kind"] == "interrupt":
+            needs.append(f"- interrupt `{n['id']}` [{n.get('epic') or '-'}] [{n['source']}] {untrusted(n['title'])}{when}")
+        elif n["kind"] == "authorize":
+            needs.append(f"- authorize ticket `{n['id']}` {untrusted(n['title'])}{when}")
+        elif n["kind"] == "dialog":
+            needs.append(f"- dialog `{n['pane']}` {n['title']} (active {ago_s(n['age'])})")
+        else:
+            h = hrs.setdefault(n["client"], [0, 0.0])
+            h[0], h[1] = h[0] + 1, h[1] + n["hours"]
     n_snoozed = len(b.get("snoozes") or {})
     trouble = [f"- `{a['pane']}` {a['watch']['state']}: {a['title']}{role_s(a)} :: {a['watch']['text']} ({ago_s(a['watch']['at'])})"
                for a in b.get("agents") or [] if a.get("watch") and a["watch"]["state"] in ("failed", "stopped-silent", "overdue")]
@@ -895,6 +1072,7 @@ def digest(b):
             under.append(f"- {e['epic']}: {len(segs)} in flight ({', '.join(segs[:6])}{'…' if len(segs) > 6 else ''})")
     under += [f"- `{a['pane']}` waiting: {a['watch']['text']}"
               for a in b.get("agents") or [] if a.get("watch") and a["watch"]["state"] == "waiting"]
+    needs += [f"- client hours to confirm: {c} {h:.2f}h in {n} row(s)" for c, (n, h) in sorted(hrs.items())]
     for title, items in (("Needs you", needs), ("Trouble", trouble), ("Ready", ready), ("Under way", under)):
         out.append(f"## {title} ({len(items)})")
         out.extend(items or ["- nothing"])
@@ -1016,7 +1194,7 @@ def watch(args):
 
 def main():
     ap = argparse.ArgumentParser(prog="adw-board")
-    ap.add_argument("cmd", nargs="?", choices=("watch", "digest", "show"))
+    ap.add_argument("cmd", nargs="?", choices=("watch", "digest", "show", "needs"))
     ap.add_argument("target", nargs="?")
     ap.add_argument("--days", type=float, default=7)
     ap.add_argument("--all", action="store_true")
@@ -1033,10 +1211,13 @@ def main():
         watch(args)
         return
     b = build(args)
-    if args.cmd in ("digest", "show"):
+    if args.cmd in ("digest", "show", "needs"):
         for_mate(b)
     if args.cmd == "digest":
         print(digest(b), end="")
+        return
+    if args.cmd == "needs":
+        print(needs_text(needs_you(b)), end="")
         return
     if args.cmd == "show":
         if not args.target:

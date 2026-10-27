@@ -1,0 +1,62 @@
+{
+  "data": {
+    "me": {
+      "id": "1",
+      "name": "Pat Owner"
+    },
+    "boards": [
+      {
+        "id": "111",
+        "updates": [
+          {
+            "id": "1",
+            "text_body": "Client asked about the timeline",
+            "created_at": "2026-10-26T11:55:00Z",
+            "creator": {
+              "id": "9",
+              "name": "Pat Client"
+            },
+            "item_id": "501",
+            "item": {
+              "id": "501",
+              "name": "Item 1"
+            }
+          },
+          {
+            "id": "2",
+            "text_body": "@pat can you look at this?",
+            "created_at": "2026-10-26T11:50:00Z",
+            "creator": {
+              "id": "9",
+              "name": "Pat Client"
+            },
+            "item_id": "502",
+            "item": {
+              "id": "502",
+              "name": "Item 2"
+            }
+          }
+        ]
+      },
+      {
+        "id": "222",
+        "updates": [
+          {
+            "id": "4",
+            "text_body": "second board update",
+            "created_at": "2026-10-26T11:30:00Z",
+            "creator": {
+              "id": "9",
+              "name": "Pat Client"
+            },
+            "item_id": "504",
+            "item": {
+              "id": "504",
+              "name": "Item 4"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

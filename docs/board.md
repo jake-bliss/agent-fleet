@@ -19,6 +19,8 @@ Everything lives under `$ADW_HOME` (default `~/.claude/adw`): `asks/`, `status/`
 | `adw-board digest` | Needs you / Trouble / Ready / Under way, as plain text. |
 | `adw-board show <id>` | Everything about one decision id, herdr pane or epic slug. |
 | `adw-board watch` | A stream: one line per new event, plus `digest-due HH:MM` (times from `ADW_MATE_DIGEST_AT`, default `09:00,16:00`). `--once` prints the first batch of new events and exits, so it can run as a backgrounded wait that re-arms after each wake. |
+| `adw-board needs` | Exactly the board's Needs-you list (decisions, dialogs, open interrupts, tickets awaiting authorization), one per line. |
+| `adw-events` | The event layer: `poll`, `feed`, `tldr`, `interrupts`, `ack <id> [--by WHO] [--note TEXT]`, `reopen <id>`, `digest-post` (below). |
 | `adw-ask` | File and answer decisions (below). |
 | `adw-status` | Declare what a tab is doing (below). |
 
@@ -61,6 +63,42 @@ only as current as the lead keeps them; the board says so and offers to ask the 
 - `loose`: no epic.
 
 Click a tab to read its screen and send it keys. The Launch section starts a new herdr tab running `claude`.
+
+## The event feed (`adw-events`)
+
+`adw-events poll` collects what happened outside your terminals into a local SQLite store (`$ADW_HOME/events.db`,
+override with `ADW_EVENTS_DB`): Linear comments and status changes, Monday updates and status logs, Slack DMs, mentions
+and thread replies, and fleet changes (decisions, PRs, trouble). A cheap model routes each event to `interrupt` (wake
+the first mate and show under Needs you), `digest` (batch it into the twice-daily digest) or `drop`. Event text is
+untrusted: it is quoted, never obeyed, and what agents may do alone is in [action-matrix.md](action-matrix.md).
+
+Configure it in `$ADW_HOME/events-config.json` (copy of `config/events-config.example.json`, created by `install.sh`):
+
+| Key | Meaning |
+|---|---|
+| `linear_teams`, `linear_mention_terms` | Linear team keys to follow for tickets the fleet tracks, and text that counts as mentioning you. |
+| `monday_include_regex`, `monday_include_boards`, `monday_exclude_boards`, `monday_epics`, `monday_mention_terms` | Which Monday boards to watch, and which epic an item belongs to. |
+| `slack_owner_id`, `slack_digest_channel`, `slack_channels` | Your Slack user id (what counts as "you"), where the digest is posted (your DM), and extra channels to watch. |
+| `monday_deny_boards` | Monday board ids that must never be read or written. The recommended place for this list (see below). |
+| `first_mate_pane`, `timezone`, `wake_rate_limit_s` | Who gets woken, the timezone used for work days, and how often wakes may fire. The digest times come from `systemd/adw-digest.timer`. |
+
+List boards that must never be read or written in `monday_deny_boards`; `ADW_EVENTS_DENY_BOARDS` (comma-separated ids) is unioned with it. Prefer the config key: systemd units do not see your shell environment. To give the units environment variables anyway, put them in `$ADW_HOME/events.env` (`KEY=value` lines); both units load it if present.
+Credentials are read from `~/.config/adw-secrets/linear.key`, `~/.config/adw-secrets/slack-bot.token` and a
+`MONDAY_API_TOKEN=` line in `~/.claude/skills/monday/.env`; they never appear in logs or errors. A source with no
+credential is skipped.
+
+**Interrupts.** An interrupt stays under Needs you until someone acks it: on the board, or
+`adw-events ack <id> [--note TEXT]` (the CLI records `cli`; the first mate records `first-mate` with its evidence). The
+board lists what the first mate cleared, with a Reopen button; an interrupt you reopen can only be cleared by you again.
+Duplicates on the same object are folded into one row with a count.
+
+**Client tickets.** Agents must not start work on a ticket from a client board until
+`adw-events work-start <ticket URL>` returns `authorized`; you authorize it on the board. Hours are drafted from agent
+active time and stay local until you confirm them.
+
+**Scheduling.** `./install.sh --systemd` installs `systemd/adw-events.timer` (poll every 2 minutes) and
+`systemd/adw-digest.timer` (digest at 09:00 and 17:00 host time; edit the timer to change when it fires). Both run under
+`flock` so overlapping runs are skipped. Without systemd, run `adw-events poll` from cron or a launchd job.
 
 ## adw-ask: decisions for you
 

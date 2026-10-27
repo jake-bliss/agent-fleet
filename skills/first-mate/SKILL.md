@@ -71,7 +71,7 @@ lists active vs paused.
    not "the conductor crashed").
 
 ## Tools (zero-token; prefer them to reading files)
-`adw-board digest` (Needs you / Trouble / Ready / Under way) · `adw-board show <id>` (decision id,
+`adw-board needs` (exactly the board's Needs-you list) · `adw-board digest` (Needs you / Trouble / Ready / Under way) · `adw-board show <id>` (decision id,
 pane or epic slug; includes the tab's last screen) · `adw-board watch` (one line per NEW event, plus
 `digest-due HH:MM` twice a day) · board: `http://127.0.0.1:4518/` or your `tailscale serve` URL (tab
 view `…/#view=<pane>`). Items the user snoozed on the board stay out of `watch` and `digest` until
@@ -86,7 +86,11 @@ the snooze ends — don't chase them.
    A notification that an agent "is waiting on its own background work" is not news: end the turn at once,
    no tool calls, no text.
 3. **Each wake** (lines within a minute = one batch):
-   - `needs-you` — one chat line: what, and `/continue <id>`. Don't explain it.
+   - `needs-you decision|dialog` — one chat line: what, and `/continue <id>`. Don't explain it.
+   - `needs-you interrupt <id>` — if it is plainly resolved or not the user's (answered in its thread,
+     ticket already decided, someone else's item, a duplicate), clear it:
+     `adw-events ack <id> --by first-mate --note "<one-line evidence>"`. The board
+     lists what you cleared, with Reopen. Unsure → leave it open and give the one chat line.
    - `trouble` — `adw-board show <pane>`; not yet nudged → the one check-in (Upkeep), logged. Already
      nudged or `failed` → ≤ 3 lines to the user (what the screen shows, likely reading, what they
      could do); update Trouble.
@@ -97,6 +101,12 @@ the snooze ends — don't chase them.
    - **Re-arm** — after handling the batch, start the next `adw-board watch --once` before ending the
      turn. Never sit without one. Exit without events or non-zero → `watch-error` handling.
 4. Log each wake in `notes.md`: time, event, useful/noise (honest guess).
+
+## What's waiting on the user: the board is the list
+Before telling the user what needs them (digest, status answer, "nothing waiting"), run `adw-board needs`
+and report that list, never from memory. Something you think needs them that isn't on it (a push only
+their terminal can do, a choice in chat) → `adw-ask new` so it is on the board, then name the id.
+Rebuild `digest.md` whenever you give the user that list, not only at `digest-due`.
 
 ## Digest (`digest.md`, shown on the board)
 Header `_Updated HH:MM · N need you · N trouble_`, then **Needs you** / **Trouble** / **Ready** /

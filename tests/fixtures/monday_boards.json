@@ -1,0 +1,52 @@
+{
+  "data": {
+    "boards": [
+      {
+        "id": "111",
+        "name": "I - Acme",
+        "state": "active",
+        "workspace": {
+          "name": "Main workspace"
+        }
+      },
+      {
+        "id": "222",
+        "name": "M - Globex",
+        "state": "active",
+        "workspace": null
+      },
+      {
+        "id": "7000002",
+        "name": "I - Initech",
+        "state": "active",
+        "workspace": {
+          "name": "Main workspace"
+        }
+      },
+      {
+        "id": "7000001",
+        "name": "I - Private",
+        "state": "active",
+        "workspace": {
+          "name": "Main workspace"
+        }
+      },
+      {
+        "id": "333",
+        "name": "Roadmap",
+        "state": "active",
+        "workspace": {
+          "name": "Main workspace"
+        }
+      },
+      {
+        "id": "444",
+        "name": "I - Elsewhere",
+        "state": "active",
+        "workspace": {
+          "name": "Other"
+        }
+      }
+    ]
+  }
+}

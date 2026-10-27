@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "has_more": false,
+  "messages": [
+    {
+      "ts": "1793014700.000100",
+      "user": "UPAT",
+      "text": "<@UOWNER1> FYI release is out"
+    },
+    {
+      "ts": "1793014000.000100",
+      "user": "UOWNER1",
+      "text": "I will take this",
+      "reply_count": 2
+    },
+    {
+      "ts": "1793014900.000100",
+      "user": "UPAT",
+      "text": "unrelated chatter, no mention"
+    },
+    {
+      "ts": "1793014950.000100",
+      "user": "UOWNER1",
+      "bot_id": "BX",
+      "text": "posted via claude\n\nSent using Claude <@UOWNER1>"
+    }
+  ]
+}
