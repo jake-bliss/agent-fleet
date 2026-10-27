@@ -1,0 +1,22 @@
+{
+  "ok": true,
+  "messages": [
+    {
+      "ts": "1793014000.000100",
+      "user": "UOWNER1",
+      "text": "I will take this"
+    },
+    {
+      "ts": "1793014500.000200",
+      "user": "UPAT",
+      "thread_ts": "1793014000.000100",
+      "text": "thanks, can you also change the label?"
+    },
+    {
+      "ts": "1793014600.000300",
+      "user": "UOWNER1",
+      "thread_ts": "1793014000.000100",
+      "text": "on it\n\nSent using Claude"
+    }
+  ]
+}

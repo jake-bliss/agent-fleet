@@ -1,0 +1,10 @@
+[Unit]
+Description=ADW digest at 09:00 and 17:00 (host local time; keep in step with digest_times)
+
+[Timer]
+OnCalendar=*-*-* 09:00:00
+OnCalendar=*-*-* 17:00:00
+Persistent=false
+
+[Install]
+WantedBy=timers.target

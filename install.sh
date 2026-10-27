@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Usage: ./install.sh [--launchd]
+# Usage: ./install.sh [--launchd] [--systemd]
 #   Installs adw into ADW_HOME (default $HOME/.claude/adw), puts its commands on PATH via
 #   ~/.local/bin, links its skills into ~/.claude/skills, and links hooks/ into ADW_HOME (hooks are
 #   never registered for you). Safe to re-run.
 #   --launchd  also render and load a launchd agent that keeps the ADW Board running (macOS).
+#   --systemd  also install and start the user timers for the event poller and digest (Linux).
 #   Env: ADW_HOME, ADW_BIN_DIR (default ~/.local/bin), ADW_LAUNCHD_LABEL (default com.example.adw-board).
 set -euo pipefail
 
@@ -14,10 +15,12 @@ SKILLS_DIR="$HOME/.claude/skills"
 LABEL="${ADW_LAUNCHD_LABEL:-com.example.adw-board}"
 
 want_launchd=0
+want_systemd=0
 for arg in "$@"; do
   case "$arg" in
     --launchd) want_launchd=1 ;;
-    -h|--help) sed -n "2,7p" "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --systemd) want_systemd=1 ;;
+    -h|--help) sed -n "2,8p" "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -67,7 +70,7 @@ for f in "$REPO"/bin/*; do
   chmod +x "$f"
   link "$f" "$BIN_DIR/$(basename "$f")"
 done
-for pair in "adw-board:board/board.py" "adw-ask:board/asks.py" "adw-status:board/status.py" "adw-epic-report:board/epic-report.py"; do
+for pair in "adw-board:board/board.py" "adw-ask:board/asks.py" "adw-status:board/status.py" "adw-epic-report:board/epic-report.py" "adw-events:board/events.py"; do
   name="${pair%%:*}"
   src="$REPO/${pair#*:}"
   if [ -f "$src" ]; then
@@ -137,6 +140,22 @@ if [ "$want_launchd" -eq 1 ]; then
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
   launchctl bootstrap "gui/$(id -u)" "$plist"
   echo "launchd: loaded $LABEL ($plist); board on http://127.0.0.1:4518/"
+fi
+
+if [ "$want_systemd" -eq 1 ]; then
+  if ! command -v systemctl >/dev/null 2>&1; then
+    echo "--systemd needs systemctl; run '$ADW_HOME/board/events.py poll' from cron or a launchd job instead" >&2
+    exit 1
+  fi
+  unit_dir="$HOME/.config/systemd/user"
+  mkdir -p "$unit_dir"
+  for u in adw-events.service adw-events.timer adw-digest.service adw-digest.timer; do
+    cp "$REPO/systemd/$u" "$unit_dir/$u"
+  done
+  systemctl --user daemon-reload
+  systemctl --user enable --now adw-events.timer adw-digest.timer
+  echo "systemd: adw-events.timer polls every 2 minutes; adw-digest.timer posts at 09:00 and 17:00 host time"
+  note "units assume ADW_HOME=\$HOME/.claude/adw; edit $unit_dir/adw-*.service if yours differs"
 fi
 
 echo "done. Next: edit $ADW_HOME/manifest.json, then run: adw-board --serve 4518"

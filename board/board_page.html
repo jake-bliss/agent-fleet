@@ -7,127 +7,166 @@
 <link rel="icon" id="favicon" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Source+Sans+3:wght@400;600;700&family=Geist+Mono:wght@400;600&display=swap" rel="stylesheet">
-<meta name="color-scheme" content="dark">
-<style>
-:root {
-  --bg: #171d1b; --card: #222b26; --raised: #2b352e; --ink: #eee9db; --muted: #b4b9aa; --faint: #909d87;
-  --line: #566451; --input: #7c8a76; --gold: #cfb87b; --chip: #2b352e;
-  --red: oklch(0.68 0.19 25); --amber: #cfb87b; --green: oklch(0.75 0.13 150); --blue: #cfb87b;
-  --display: "Fraunces", Georgia, serif;
-  --sans: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
-  --mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650&display=swap" rel="stylesheet">
+<meta name="color-scheme" content="dark light">
+<style>:root {
+  --bg: #0f0f10; --card: #18181b; --raised: #232326; --hover: #1f1f23; --ink: #ececf0; --muted: #a8a8b3; --faint: #8b8b96;
+  --line: #27272a; --input: #3a3a40; --accent: #8ab4ff; --primary: #ececf0; --on-primary: #0f0f10;
+  --red: #f0716b; --amber: #e0b04c; --green: #5fc58a; --blue: #6aa6f8; --queued: #6b6b75;
+  --code: #131316; --shadow: 0 1px 2px rgba(0,0,0,.4);
+  --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --r: 14px; --r-sm: 10px;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f6f6f7; --card: #ffffff; --raised: #f0f0f2; --hover: #f4f4f6; --ink: #18181b; --muted: #52525b; --faint: #71717a;
+    --line: #e4e4e7; --input: #cfcfd4; --accent: #2f5fd0; --primary: #18181b; --on-primary: #fafafa;
+    --red: #d1342d; --amber: #a86e00; --green: #1d8a4e; --blue: #2563c9; --queued: #a1a1aa;
+    --code: #f4f4f5; --shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
 }
 * { box-sizing: border-box; }
-html, body { background: var(--bg); }
-body { margin: 0; color: var(--ink); font: 15px/1.5 var(--sans); }
+html, body { background: var(--bg); color-scheme: dark light; }
+body { margin: 0; color: var(--ink); font: 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--line); }
-::-webkit-scrollbar-thumb:hover { background: var(--input); }
-header { display: flex; align-items: baseline; gap: 16px; padding: 22px 24px 10px; flex-wrap: wrap; border-bottom: 3px double var(--line); margin: 0 24px; padding-left: 0; padding-right: 0; }
-h1 { font-family: var(--display); font-weight: 400; font-size: 34px; letter-spacing: -.01em; margin: 0; line-height: 1.1; }
+::-webkit-scrollbar-thumb { background: var(--input); border-radius: 8px; border: 2px solid var(--bg); }
+header { display: flex; align-items: center; gap: 12px 14px; padding: 28px 24px 14px; flex-wrap: wrap; max-width: 1200px; margin: 0 auto; }
+h1 { font-weight: 650; font-size: 22px; letter-spacing: -.02em; margin: 0; }
+.summary { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 10px 28px; font-size: 14px; color: var(--muted); padding-top: 6px; }
+.summary b { font-size: 24px; color: var(--ink); font-weight: 600; margin-right: 7px; letter-spacing: -.02em; }
+.summary .hot b { color: var(--red); }
 .meta { color: var(--muted); font-size: 13px; }
-main { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 18px; padding: 18px 24px 40px; }
-section { background: var(--card); border: 1px solid var(--line); border-radius: 0; padding: 16px 18px; min-width: 0; }
-section.wide { grid-column: 1 / -1; }
-h2 { font-family: var(--sans); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .18em; margin: 0 0 12px; color: var(--gold); }
-h2 .n { color: var(--ink); }
-.item { padding: 10px 0; border-top: 1px solid var(--line); }
-.item:first-of-type { border-top: 0; }
+main { display: flex; flex-direction: column; gap: 16px; max-width: 1200px; margin: 0 auto; padding: 8px 24px 56px; }
+section { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 20px 22px; min-width: 0; box-shadow: var(--shadow); }
+h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; color: var(--muted); letter-spacing: .01em; }
+h2 .n { color: var(--ink); background: var(--raised); border-radius: 999px; padding: 1px 9px; margin-left: 4px; font-size: 12px; }
+.item { padding: 12px 0; border-top: 1px solid var(--line); }
 .row { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
-.epic { font-family: var(--display); font-weight: 400; font-size: 16px; }
-.tag { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 1px 7px; border: 1px solid var(--line); background: var(--raised); white-space: nowrap; }
-.tag.red { border-color: var(--red); } .tag.amber { border-color: var(--gold); } .tag.green { border-color: var(--green); }
-.red { color: var(--red); } .amber { color: var(--amber); } .green { color: var(--green); }
+.epic { font-weight: 600; font-size: 15px; }
+.tag { font-size: 11.5px; font-weight: 500; padding: 1px 9px; border-radius: 999px; background: var(--raised); color: var(--muted); white-space: nowrap; }
+.tag.red { color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); }
+.tag.amber { color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, transparent); }
+.tag.green { color: var(--green); background: color-mix(in srgb, var(--green) 14%, transparent); }
+.red { color: var(--red); } .amber { color: var(--amber); } .green { color: var(--green); } .blue { color: var(--blue); }
 .dim { color: var(--muted); }
 .mono, code { font-family: var(--mono); font-size: 12.5px; }
-a { color: var(--gold); text-decoration: underline; text-underline-offset: 4px; } a:hover { color: var(--ink); }
-ul { margin: 6px 0 0; padding-left: 20px; } li { margin: 3px 0; }
-details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 4px; }
-details summary:hover { color: var(--ink); }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; text-underline-offset: 3px; }
+ul { margin: 6px 0 0; padding-left: 20px; } li { margin: 4px 0; }
+details > summary { cursor: pointer; color: var(--muted); font-size: 14px; margin-top: 6px; }
+details > summary:hover { color: var(--ink); }
 table { width: 100%; border-collapse: collapse; }
-td, th { text-align: left; padding: 8px 10px 8px 0; border-top: 1px solid rgba(86,100,81,.5); vertical-align: top; }
-th { color: var(--gold); font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .14em; border-top: 0; border-bottom: 1px solid var(--line); }
-tbody tr:hover, table tr:hover td { background: rgba(43,53,46,.35); }
-.bar { height: 6px; background: var(--raised); border: 1px solid var(--line); overflow: hidden; width: 90px; margin-top: 5px; }
-.bar > span { display: block; height: 100%; background: var(--gold); }
-.over > span { background: var(--red); }
-#err { color: var(--red); padding: 8px 24px 0; }
-.decision { background: var(--bg); border: 1px solid var(--line); border-left: 3px double var(--gold); padding: 14px 16px; margin: 12px 0; }
-.decision.answered { border-left-color: var(--green); opacity: .8; }
-.body { margin-top: 10px; max-height: 420px; overflow: auto; color: #cbd0bd; }
-.body h1, .body h2, .body h3 { font-family: var(--display); font-weight: 400; font-size: 17px; margin: 12px 0 4px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+td, th { text-align: left; padding: 12px 12px 12px 0; border-top: 1px solid var(--line); vertical-align: top; }
+th { color: var(--faint); font-weight: 500; font-size: 12px; border-top: 0; padding-bottom: 8px; }
+#err { color: var(--red); padding: 8px 24px 0; max-width: 1200px; margin: 0 auto; }
+.decision { background: var(--raised); border-radius: var(--r-sm); padding: 14px 16px; margin: 12px 0; }
+.body { margin-top: 10px; max-height: 420px; overflow: auto; color: var(--ink); }
+.body h1, .body h2, .body h3 { font-size: 15px; font-weight: 600; margin: 14px 0 4px; color: var(--ink); }
 .body p { margin: 6px 0; }
-.body b, .body strong { color: var(--ink); font-weight: 600; }
-.body code { background: var(--raised); color: var(--gold); padding: 1px 5px; }
-.body pre { background: var(--raised); padding: 10px 12px; overflow-x: auto; border: 1px solid var(--line); }
-.body pre code { background: transparent; color: var(--ink); padding: 0; }
-.screen { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: #121715; border: 1px solid var(--line); padding: 8px 10px; max-height: 260px; overflow: auto; margin-top: 6px; }
+.body b, .body strong { font-weight: 600; }
+.body code { background: var(--raised); padding: 1px 6px; border-radius: 6px; }
+.body pre { background: var(--code); padding: 10px 12px; overflow-x: auto; border-radius: var(--r-sm); }
+.body pre code { background: transparent; padding: 0; }
+.body table { display: block; overflow-x: auto; }
+.screen { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; background: var(--code); border-radius: var(--r-sm); padding: 10px 12px; max-height: 260px; overflow: auto; margin-top: 6px; }
 .opts { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
-.opt { text-align: left; padding: 9px 12px; border: 1px solid var(--input); background: transparent; color: var(--ink); cursor: pointer; font: inherit; border-radius: 0; }
-.opt:hover { background: var(--raised); }
-.opt.sel { border: 3px double var(--gold); padding: 7px 10px; color: var(--gold); }
-.opt .k { font-family: var(--display); font-weight: 600; margin-right: 8px; color: var(--gold); }
-textarea, .inp, .linksel, input { border-radius: 0; border: 1px solid var(--input); background: var(--bg); color: var(--ink); font: inherit; accent-color: var(--gold); }
+.opt { text-align: left; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-sm); background: transparent; color: var(--ink); cursor: pointer; font: inherit; }
+.opt:hover:not(:disabled) { background: var(--hover); }
+.opt.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.opt .k { font-weight: 600; margin-right: 8px; color: var(--accent); }
+textarea, .inp, .linksel, input { border-radius: var(--r-sm); border: 1px solid var(--input); background: var(--bg); color: var(--ink); font: inherit; accent-color: var(--accent); }
 textarea::placeholder, input::placeholder { color: var(--faint); }
-textarea { width: 100%; min-height: 54px; margin-top: 10px; padding: 9px; resize: vertical; }
+textarea { width: 100%; min-height: 54px; margin-top: 10px; padding: 10px 12px; resize: vertical; }
 .actions { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
-button.go { display: inline-flex; align-items: center; gap: 6px; padding: 6px 16px; border-radius: 0; border: 3px double var(--gold); background: transparent; color: var(--gold); cursor: pointer; font: 600 14px var(--sans); transition: background .15s, color .15s; }
-button.go:hover:not(:disabled) { background: rgba(207,184,123,.1); color: var(--ink); }
-button.go:disabled { opacity: .5; cursor: not-allowed; }
-button.go.danger { border-color: var(--red); color: var(--red); }
-button.go.danger:hover:not(:disabled) { background: rgba(220,90,80,.12); color: var(--ink); }
-button.ghost { padding: 5px 11px; border-radius: 0; border: 1px solid var(--input); background: transparent; color: var(--ink); cursor: pointer; font: 500 13px var(--sans); transition: background .15s; }
-button.ghost:hover { background: var(--raised); }
-button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible, .opt:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
-.status { font-size: 13px; }
-.linksel { margin-top: 4px; max-width: 220px; padding: 3px 4px; font-size: 12.5px; }
-[data-view] { cursor: pointer; text-decoration: underline dotted var(--gold); text-underline-offset: 3px; }
+button.go { display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; border-radius: 999px; border: 0; background: var(--primary); color: var(--on-primary); cursor: pointer; font: 600 14px var(--sans); transition: opacity .15s; }
+button.go:hover:not(:disabled) { opacity: .85; }
+button.go:disabled { opacity: .4; cursor: not-allowed; }
+button.go.danger { background: transparent; border: 1px solid var(--red); color: var(--red); }
+button.ghost { padding: 6px 14px; border-radius: 999px; border: 1px solid var(--input); background: transparent; color: var(--ink); cursor: pointer; font: 500 13.5px var(--sans); transition: background .15s; }
+button.ghost:hover { background: var(--hover); }
+button.ghost.danger { border-color: var(--red); color: var(--red); }
+button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible, .opt:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.status { font-size: 13px; color: var(--muted); }
+.linksel { margin-top: 4px; max-width: 220px; padding: 4px 8px; font-size: 13px; }
+[data-view] { cursor: pointer; color: var(--accent); }
+[data-view]:hover { text-decoration: underline; text-underline-offset: 3px; }
 #viewer { position: fixed; inset: 0; background: var(--bg); z-index: 10; display: none; flex-direction: column; }
 #viewer.open { display: flex; }
-#v-head { display: flex; gap: 10px; align-items: center; padding: 10px 16px; border-bottom: 3px double var(--line); flex-wrap: wrap; background: var(--card); }
+#v-head { display: flex; gap: 10px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; background: var(--card); }
 #v-term { flex: 1; overflow: auto; margin: 0; padding: 10px 16px; font-family: var(--mono);
-  font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; background: #121715; color: #e4dfd0; }
-#v-foot { border-top: 3px double var(--line); padding: 10px 16px 14px; background: var(--card); }
+  font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-break: break-word; background: #0a0a0b; color: #e4e4e7; }
+#v-foot { border-top: 1px solid var(--line); padding: 10px 16px 14px; background: var(--card); }
 .keys { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .keys button { min-width: 44px; min-height: 38px; font-family: var(--mono); }
+#viewer:not(.keys-on) .keys { display: none; }
+#v-keys { min-width: 44px; min-height: 44px; }
+#v-keys[aria-pressed="true"] { background: var(--line); }
 .v-row { display: flex; gap: 8px; align-items: flex-end; }
 .v-row textarea { margin: 0; min-height: 44px; }
-.inp { display: block; width: 100%; margin-top: 4px; padding: 9px; }
-.body table, .wrap { display: block; overflow-x: auto; }
-.lanes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
-.lane { background: var(--bg); border: 1px solid var(--line); min-width: 0; }
-.lane > h3 { margin: 0; padding: 8px 10px; font: 600 11px var(--sans); letter-spacing: .16em; text-transform: uppercase; color: var(--gold); border-bottom: 3px double var(--line); display: flex; justify-content: space-between; }
-.lane .cards { padding: 8px; display: flex; flex-direction: column; gap: 8px; max-height: 460px; overflow: auto; }
-.kcard { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--line); padding: 7px 9px; font-size: 13.5px; }
-.kcard .sid { font-family: var(--mono); font-size: 12.5px; color: var(--ink); word-break: break-word; }
-.kcard .meta2 { display: flex; gap: 6px; flex-wrap: wrap; align-items: baseline; margin-top: 4px; font-size: 12px; color: var(--muted); }
-.kcard .note { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
-.lane.l-building .kcard { border-left-color: var(--gold); }
-.lane.l-review .kcard { border-left-color: var(--green); }
-.lane.l-blocked .kcard { border-left-color: var(--red); }
+.inp { display: block; width: 100%; margin-top: 4px; padding: 9px 12px; }
+.wrap { display: block; overflow-x: auto; }
+.hist { margin-top: 8px; padding-left: 12px; font-size: 13px; }
+.hist .ev, .evlist .ev { padding: 4px 0; }
+.nrow { border-top: 1px solid var(--line); }
+.nrow > summary, .nrow > .nsum { list-style: none; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 12px 0; margin: 0; cursor: pointer; color: var(--ink); font-size: 15px; }
+.nrow > .nsum { cursor: default; }
+.nrow > summary::-webkit-details-marker { display: none; }
+.nrow > summary::before { content: "\25B8"; color: var(--faint); width: 12px; }
+.nrow[open] > summary::before { content: "\25BE"; }
+.nrow .ttl { flex: 1 1 260px; min-width: 0; font-weight: 550; overflow-wrap: anywhere; }
+.nrow .rb { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-left: auto; }
+.nrow .sub { color: var(--muted); font-size: 14px; margin: -6px 0 12px 0; }
+.nrow .nbody { padding: 0 0 16px 24px; }
+.nrow .nbody .actions { margin-top: 8px; }
+.nrow .rb.actions { margin-top: 0; }
+.nrow.answered { opacity: .75; }
+.nrow .rb > button.go { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; }
+@media (min-width: 521px) { .nrow .rb > button.go { max-width: 380px; } }
+.hrs { width: 90px; display: inline-block; margin: 0; padding: 6px 10px; }
+.pbar { display: flex; height: 8px; width: 100%; min-width: 120px; background: var(--raised); border-radius: 999px; overflow: hidden; gap: 2px; }
+.pbar > span { display: block; height: 100%; }
+.pbar .p-done { background: var(--green); } .pbar .p-fl { background: var(--blue); } .pbar .p-q { background: var(--queued); } .pbar .p-bl { background: var(--red); }
+.pnums { display: flex; gap: 4px 14px; flex-wrap: wrap; font-size: 13px; margin-top: 6px; color: var(--muted); }
+.pnums b { font-weight: 600; }
+.pnums .z { opacity: .45; }
+tr.erow { cursor: pointer; }
+.etoggle { all: unset; cursor: pointer; display: block; border-radius: 6px; }
+.etoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.go.armed { background: var(--amber); color: #0f0f10; }
+tr.erow:hover > td { background: var(--hover); }
+tr.erow.idle > td { opacity: .55; }
+tr.erow.open > td { background: var(--hover); }
+tr.edet > td { padding: 0 0 16px; background: var(--hover); border-top: 0; }
+.edet .pad { padding: 8px 16px; display: grid; gap: 12px; }
+.edet h4 { margin: 0 0 4px; font: 600 12px var(--sans); color: var(--faint); }
+.edet ul { margin: 0; }
+.asks { display: inline-block; min-width: 24px; text-align: center; padding: 1px 9px; border-radius: 999px; background: color-mix(in srgb, var(--red) 16%, transparent); color: var(--red); font-weight: 600; }
+.tblbox { overflow-x: auto; }
+.sec > summary { margin: 0; font-size: 14px; color: var(--muted); }
+.sec > summary h2 { margin: 0; }
+.sec[open] > summary { margin-bottom: 14px; }
 @media (max-width: 520px) {
-  header { margin: 0 16px; padding-top: 14px; gap: 8px; }
-  h1 { font-size: 28px; }
-  main { padding: 14px 16px 32px; grid-template-columns: 1fr; gap: 14px; }
-  section { padding: 14px; }
+  header { padding: 18px 16px 10px; gap: 8px; }
+  main { padding: 6px 12px 32px; gap: 12px; }
+  section { padding: 16px; }
+  .summary { gap: 8px 20px; }
+  .nrow .rb { margin-left: 0; width: 100%; padding-left: 24px; min-width: 0; }
+  .nrow .nbody { padding-left: 0; }
   .decision { padding: 12px; }
   .body { max-height: none; }
   .opt, button.go, button.ghost { min-height: 44px; }
-  textarea, .inp { font-size: 16px; }
+  textarea, .inp, input { font-size: 16px; }
   .screen { font-size: 11px; }
-  .lanes { grid-template-columns: 1fr; }
-  .lane .cards { max-height: none; }
   #epics table, #epics tbody { display: block; }
   #epics tr:first-child:has(th) { display: none; }
-  #epics tr.erow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px 10px; padding: 12px 0; border-top: 1px solid var(--line); }
-  #epics tr.erow td { display: block; padding: 0; border: 0; }
-  #epics tr.erow td[data-l]::before { content: attr(data-l); display: block; color: var(--gold); font-size: 10px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; }
+  #epics tr.erow { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px 10px; padding: 14px 0; border-top: 1px solid var(--line); }
+  #epics tr.erow td { display: block; padding: 0; border: 0; background: transparent !important; }
+  #epics tr.erow td[data-l]::before { content: attr(data-l); display: block; color: var(--faint); font-size: 11px; font-weight: 500; }
   #epics tr.erow .c-name, #epics tr.erow .c-wide { grid-column: 1 / -1; }
   #epics tr.erow .linksel { max-width: 100%; width: 100%; }
   #epics tr:not(.erow) { display: block; }
   #epics tr:not(.erow) > td { display: block; padding: 0; border: 0; }
+  #epics .tblbox { overflow-x: visible; }
   #v-term { font-size: 10.5px; padding: 8px; }
   #v-head, #v-foot { padding-left: 10px; padding-right: 10px; }
 }
@@ -136,10 +175,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 <body>
 <header>
   <h1>ADW Board</h1>
-  <button class="go" id="mate-btn" style="align-self:center;min-height:40px" hidden>First mate ›</button>
+  <button class="ghost" id="mate-btn" hidden>First mate ›</button>
   <span id="pins" style="display:contents"></span>
   <span class="meta" id="meta">loading…</span>
-  <label class="meta"><input type="checkbox" id="full"> all pending items</label>
+  <div class="summary" id="summary"></div>
 </header>
 <div id="err"></div>
 <div id="viewer" role="dialog" aria-modal="true">
@@ -148,12 +187,21 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
     <button class="ghost" id="v-focus" style="margin-left:auto">Focus pane</button></div>
   <pre id="v-term"></pre>
   <div id="v-foot">
-    <div class="keys"><button class="ghost" data-key="esc">Esc</button><button class="ghost" data-key="enter">Enter</button><button class="ghost" data-key="up">↑</button><button class="ghost" data-key="down">↓</button><button class="ghost" data-key="tab">Tab</button><button class="ghost" data-key="shift+tab">⇧Tab</button><button class="ghost" data-key="1">1</button><button class="ghost" data-key="2">2</button><button class="ghost" data-key="3">3</button><button class="ghost" data-key="4">4</button><button class="ghost" data-key="y">y</button><button class="ghost" data-key="n">n</button><button class="ghost" data-key="ctrl+c">Ctrl+C</button></div>
-    <div class="v-row"><textarea id="v-text" placeholder="Message to the agent (Send = type it + Enter)"></textarea><button class="go" id="v-send">Send</button></div>
+    <div class="keys" id="v-keyset"><button class="ghost" data-key="esc">Esc</button><button class="ghost" data-key="enter">Enter</button><button class="ghost" data-key="up">↑</button><button class="ghost" data-key="down">↓</button><button class="ghost" data-key="tab">Tab</button><button class="ghost" data-key="shift+tab">⇧Tab</button><button class="ghost" data-key="1">1</button><button class="ghost" data-key="2">2</button><button class="ghost" data-key="3">3</button><button class="ghost" data-key="4">4</button><button class="ghost" data-key="y">y</button><button class="ghost" data-key="n">n</button><button class="ghost" data-key="ctrl+c">Ctrl+C</button></div>
+    <div class="v-row"><button class="ghost" id="v-keys" aria-controls="v-keyset" aria-pressed="false" title="Show keys">Keys</button><textarea id="v-text" placeholder="Message to the agent (Send = type it + Enter)"></textarea><button class="go" id="v-send">Send</button></div>
   </div>
 </div>
 <main>
-  <section class="wide" id="launch"><details id="launch-d"><summary><h2 style="display:inline">Launch agent</h2>
+  <section id="needs"></section>
+  <section id="epics"></section>
+  <section id="since"></section>
+  <section id="mate" hidden></section>
+  <section id="client-time" hidden></section>
+  <section id="logtime" hidden></section>
+  <section id="tabs"></section>
+  <section id="parked" hidden></section>
+  <section id="watch" hidden></section>
+  <section id="launch"><details id="launch-d" class="sec"><summary><h2 style="display:inline">Launch agent</h2>
     <span class="dim"> · new herdr tab running claude (launch args set by ADW_LAUNCH_ARGS)</span></summary>
     <div style="display:grid;gap:8px;margin-top:10px">
       <label class="dim">Workspace <select id="l-ws" class="inp"></select></label>
@@ -164,13 +212,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
       <label class="dim">First prompt (optional) <textarea id="l-prompt" placeholder="Sent once the agent is ready"></textarea></label>
       <div class="actions"><button class="go" id="l-go">Launch</button><span class="status" id="l-st"></span></div>
     </div></details></section>
-  <section class="wide" id="needs"></section>
-  <section class="wide" id="mate" hidden></section>
-  <section class="wide" id="kanban" hidden></section>
-  <section class="wide" id="epics"></section>
-  <section class="wide" id="tabs"></section>
-  <section class="wide" id="watch" hidden></section>
-  <section class="wide" id="parked" hidden></section>
 </main>
 <script>
 const helm = dot => "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
@@ -183,11 +224,21 @@ setFavicon(false);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const ago = ts => { const s = Date.now()/1000 - ts;
   return s < 3600 ? `${Math.floor(s/60)}m` : s < 86400 ? `${Math.floor(s/3600)}h` : `${Math.floor(s/86400)}d`; };
-const pr = (repo, n) => n ? (/^[\w.-]+\/[\w.-]+$/.test(repo || "") ? ` <a href="https://github.com/${repo}/pull/${n}" target="_blank">#${n}</a>` : ` #${n}`) : "";
+const pr = (repo, n) => n ? (/^[\w.-]+\/[\w.-]+$/.test(repo || "") ? ` <a href="https://github.com/${repo}/pull/${encodeURIComponent(n)}" target="_blank">#${esc(n)}</a>` : ` #${esc(n)}`) : "";
 const segs = (e, list) => list.map(s => `<span class="mono">${esc(s.id)}</span>${pr(e.repo, s.pr)}`).join(", ");
 const md = s => esc(s).replace(/`([^`]+)`/g, '<code class="mono">$1</code>');
 const TOKEN = "__ADW_TOKEN__";
 const drafts = {}, picks = {}, confirming = {};
+const SEEN_KEY = "adw-last-seen-id";
+const getSeen = () => { try { return parseInt(localStorage.getItem(SEEN_KEY) || "0", 10) || 0; } catch (e) { return 0; } };
+const setSeen = n => { try { localStorage.setItem(SEEN_KEY, String(n)); } catch (e) {} };
+let viewFrom = getSeen(), sinceFeed = null, sinceTldr = null, tldrKey = "", visSince = 0;
+const hist = {}, expanded = {};
+const safeUrl = u => /^https:\/\//.test(u || "") ? u : "";
+const LEVEL = { interrupt: "red", wake: "amber", digest: "" };
+const evRow = e => `<div class="ev"><span class="tag ${LEVEL[e.level] || ""}">${esc(e.level)}</span> <span class="mono dim">${esc(e.kind)}</span>
+  ${e.epic ? `<span class="tag">${esc(e.epic)}</span>` : ""} ${safeUrl(e.url) ? `<a href="${esc(safeUrl(e.url))}" target="_blank">${esc(e.title)}</a>` : esc(e.title)}
+  <span class="dim">· ${ago(Date.parse(e.ts) / 1000)} ago</span></div>`;
 
 function mdBlock(src) {
   const out = []; let list = null, code = null, table = null;
@@ -241,7 +292,7 @@ function confirmRow(e, inFlight, tabs) {
   if (e.pending && e.pending.items.length) warn.push(`PENDING.md has ${e.pending.items.length} items`);
   if (tabs) warn.push("a conductor tab is still running");
   const k = "c:" + e.epic, typed = drafts[k] || "";
-  return `<tr><td colspan="9"><div class="decision" style="margin:4px 0">
+  return `<tr><td colspan="5"><div class="decision" style="margin:4px 0">
     <div>Mark <b>${esc(e.epic)}</b> complete? It disappears from the board; you can reopen it from "completed epics". Nothing in the repo or graph.json changes.</div>
     ${warn.length ? `<div class="amber" style="margin-top:6px">Heads up: ${warn.map(esc).join(" · ")}</div>` : `<div class="green" style="margin-top:6px">Nothing open in its files.</div>`}
     <input data-draft="${esc(k)}" value="${esc(typed)}" placeholder="type ${esc(e.epic)} to confirm" autocomplete="off" autocapitalize="off" spellcheck="false" class="inp" style="margin-top:10px">
@@ -252,8 +303,47 @@ function confirmRow(e, inFlight, tabs) {
 const snoozeBtns = key => `<span class="dim" style="margin-left:auto">snooze</span>${["1h", "4h", "tomorrow"].map(f => `<button class="ghost" data-snooze="${esc(key)}" data-for="${f}">${f}</button>`).join("")}`;
 const untilS = t => new Date(t * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
 
-function decisionCard(d) {
-  const ans = d.answer;
+const openD = {};
+const dk = (k, dflt) => `data-dk="${esc(k)}" ${(k in openD ? openD[k] : dflt) ? "open" : ""}`;
+document.addEventListener("toggle", e => { const k = e.target.dataset && e.target.dataset.dk; if (k) openD[k] = e.target.open; }, true);
+
+let needsPatchedAt = 0, armed = null;
+function disarm() {
+  if (!armed) return;
+  clearTimeout(armed.timer);
+  const b = document.querySelector(".go.armed"); if (b) { b.textContent = armed.label; b.classList.remove("armed"); }
+  armed = null;
+}
+function patch(el, html, after) {
+  if (el.dataset.html === html) return;
+  if (el.id === "needs") { if (armed && el.querySelector(".go.armed")) return; needsPatchedAt = Date.now(); }
+  const act = document.activeElement, key = act && act.dataset && act.dataset.draft, pos = key && el.contains(act) && [act.selectionStart, act.selectionEnd];
+  const plain = () => [...el.querySelectorAll("details:not([data-dk])")];
+  const open = plain().map(x => x.open);
+  el.innerHTML = html; el.dataset.html = html;
+  plain().forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
+  if (after) after(el);
+  if (key && pos) {
+    const t = el.querySelector(`[data-draft="${CSS.escape(key)}"]`);
+    if (t) { t.focus(); if (t.setSelectionRange && pos[0] !== null) { try { t.setSelectionRange(...pos); } catch (err) {} } }
+  }
+}
+
+const BUCKET = new Map();
+[["done", "merged done deployed merged-deployed done-direct-prod executed closed"], ["fl", "building pr-open pr-ready in_progress"],
+ ["q", "ready pending queued"], ["bl", "blocked held parked"]].forEach(([k, v]) => v.split(" ").forEach(s => BUCKET.set(s, k)));
+const bucketOf = s => BUCKET.get(s) || "other";
+function tally(counts) {
+  const t = { done: 0, fl: 0, q: 0, bl: 0, other: 0, otherSt: [] };
+  for (const [s, n] of Object.entries(counts || {})) {
+    const k = bucketOf(s), v = Number(n) || 0;
+    t[k] += v; if (k === "other" && v) t.otherSt.push(`${s} ${v}`);
+  }
+  return t;
+}
+
+function decisionRow(d) {
+  const ans = d.answer, rec = (d.options || []).find(o => o.key === d.recommend);
   const opts = (d.options || []).map(o => `<button class="opt ${picks[d.id] === o.key ? "sel" : ""}" data-pick="${esc(d.id)}" data-key="${esc(o.key)}" ${ans ? "disabled" : ""}>
     <span class="k">${esc(o.key)}</span>${esc(o.label)}${d.recommend === o.key ? ' <span class="tag green">recommended</span>' : ""}</button>`).join("");
   let foot;
@@ -267,23 +357,145 @@ function decisionCard(d) {
       <div class="actions"><button class="go" data-answer="${esc(d.id)}">Answer</button>
       ${d.pane ? `<button class="ghost" data-focus="${esc(d.pane)}">Open tab ${esc(d.pane)}</button>` : ""}<span class="status" id="st-${esc(d.id)}"></span>${snoozeBtns("d:" + d.id)}</div>`;
   }
-  return `<div class="decision ${ans ? "answered" : ""}"><div class="row"><span class="tag amber">decision</span><span class="mono dim">${esc(d.id)}</span>
-    <span class="epic">${esc(d.title)}</span>${d.epic ? `<span class="tag">${esc(d.epic)}</span>` : ""}<span class="dim">${ago(d.created)} ago</span>${d.default_at ? `<span class="amber">goes with (${esc(d.recommend)}) in ${Math.max(0, Math.round((d.default_at - Date.now() / 1000) / 60))}m unless you answer</span>` : ""}</div>
-    <div class="body">${mdBlock(d.body)}</div>${opts ? `<div class="opts">${opts}</div>` : ""}${foot}</div>`;
+  const quick = !ans && rec && !/^ship /i.test(String(rec.label)) ? `<button class="go" data-quick="${esc(d.id)}" data-key="${esc(rec.key)}" title="${esc(rec.label)}">Answer ${esc(rec.key)}: ${esc(String(rec.label).slice(0, 44))}</button><span class="status" id="st-q-${esc(d.id)}"></span>` : "";
+  return `<details class="nrow ${ans ? "answered" : ""}" ${dk("d:" + d.id)}><summary><span class="tag ${ans ? "green" : "amber"}">${ans ? "answered" : "decision"}</span><span class="mono dim">${esc(d.id)}</span>
+    ${d.epic ? `<span class="tag">${esc(d.epic)}</span>` : ""}<span class="ttl">${esc(d.title)}</span><span class="dim">${ago(d.created)} ago</span>${d.default_at ? `<span class="amber">goes with (${esc(d.recommend)}) in ${Math.max(0, Math.round((d.default_at - Date.now() / 1000) / 60))}m</span>` : ""}
+    <span class="rb">${quick}</span></summary>
+    <div class="nbody"><div class="body">${mdBlock(d.body)}</div>${opts ? `<div class="opts">${opts}</div>` : ""}${foot}</div></details>`;
+}
+
+function interruptRow(i) {
+  return `<div class="nrow"><div class="nsum"><span class="tag red">interrupt</span><span class="mono dim">${esc(i.source)}</span>
+    ${i.epic ? `<span class="tag">${esc(i.epic)}</span>` : ""}<span class="ttl">${esc(i.title)}</span>${i.count > 1 ? `<span class="dim">x${esc(i.count)}</span>` : ""}<span class="dim">${ago(i.created)} ago</span>
+    <span class="rb">${safeUrl(i.url) ? `<a href="${esc(safeUrl(i.url))}" target="_blank">Open source</a>` : ""}<button class="go" data-ack="${esc(i.id)}">Ack</button><span class="status" id="st-ack-${esc(i.id)}"></span></span></div>
+    ${i.reason ? `<div class="sub">${esc(i.reason)}</div>` : ""}</div>`;
+}
+
+function clearedRow(c) {
+  return `<div class="nrow"><div class="nsum"><span class="tag green">cleared</span><span class="mono dim">${esc(c.source)}</span><span class="tag">${esc(c.acked_by)}</span>
+    <span class="ttl">${esc(c.title)}</span><span class="dim">${ago(c.acked_at)} ago</span>
+    <span class="rb"><button class="ghost" data-ireopen="${esc(c.id)}">Reopen</button><span class="status" id="st-ireopen-${esc(c.id)}"></span></span></div>
+    ${c.ack_note ? `<div class="sub">${esc(c.ack_note)}</div>` : ""}</div>`;
+}
+
+function ticketRow(t) {
+  return `<div class="nrow"><div class="nsum"><span class="tag red">authorize</span>${t.requested_by ? `<span class="tag">${esc(t.requested_by)}</span>` : ""}
+    <span class="ttl">${esc(t.client)}: ${esc(t.title)}</span><span class="dim">${ago(t.requested_at)} ago</span>
+    <span class="rb">${safeUrl(t.url) ? `<a href="${esc(safeUrl(t.url))}" target="_blank">Open ticket</a>` : ""}
+    <button class="go" data-ticket="${esc(t.item_id)}" data-decision="authorize">Authorize</button><button class="ghost danger" data-ticket="${esc(t.item_id)}" data-decision="deny">Deny</button>
+    <span class="status" id="st-tk-${esc(t.item_id)}"></span></span></div>
+    <div class="sub">Client ticket ${esc(t.item_id)}; the fleet waits until you authorize it.</div></div>`;
+}
+
+function hoursRow(r) {
+  return `<div class="nrow"><div class="nsum"><span class="tag amber">Hours to confirm</span><span class="tag">${esc(r.client)}</span><span class="ttl">${esc(r.title)}</span><span class="dim">${esc(r.date)}</span>
+    <span class="rb actions"><input class="inp hrs" inputmode="decimal" data-draft="h:${esc(r.id)}" value="${esc(drafts["h:" + r.id] ?? (Math.round(r.hours * 4) / 4).toFixed(2))}" aria-label="hours">
+    <button class="go" data-wc="${esc(r.id)}">Confirm</button><span class="status" id="st-wc-${esc(r.id)}"></span></span></div>
+    ${r.note ? `<div class="sub">${esc(r.note)}</div>` : ""}</div>`;
+}
+
+function logTimeHtml(ct) {
+  const auth = ct.authorized || [], k = "lt:item";
+  if (!auth.length) return "";
+  return `<details class="sec" ${dk("logtime")}><summary><h2 style="display:inline">Log my time <span class="n">${auth.length}</span></h2><span class="dim"> · hours for an authorized ticket</span></summary>
+    <div class="actions">
+      <select class="inp" style="width:auto;display:inline-block;margin:0" data-draft="${k}">${auth.map(a =>
+        `<option value="${esc(a.item_id)}" ${drafts[k] === a.item_id ? "selected" : ""}>${esc(a.client)}: ${esc(a.title)}</option>`).join("")}</select>
+      <input class="inp" style="width:90px;display:inline-block;margin:0" inputmode="decimal" placeholder="hours" data-draft="lt:hours" value="${esc(drafts["lt:hours"] || "")}">
+      <input class="inp" style="width:240px;max-width:100%;display:inline-block;margin:0" placeholder="note" data-draft="lt:note" value="${esc(drafts["lt:note"] || "")}">
+      <button class="go" data-lt="1">Log</button><span class="status" id="st-lt"></span></div></details>`;
+}
+
+function clientTimeHtml(ct) {
+  const rows = (ct.recent || []).slice().reverse();
+  const d = encodeURIComponent(ct.from || "");
+  return `<details class="sec" ${dk("client-time")}><summary><h2 style="display:inline">Client time <span class="n">${rows.length}</span></h2><span class="dim"> · last 14 days, local ledger</span></summary>
+    ${rows.length ? `<div class="tblbox"><table><tr><th>Date</th><th>Client</th><th>Ticket</th><th>Hours</th><th></th></tr>${rows.map(r =>
+      `<tr><td class="mono">${esc(r.date)}</td><td>${esc(r.client)}</td><td>${safeUrl(r.url) ? `<a href="${esc(safeUrl(r.url))}" target="_blank">${esc(r.description)}</a>` : esc(r.description)}</td>
+      <td class="mono">${Number(r.hours).toFixed(2)}</td><td class="${r.status === "draft" ? "amber" : "green"}">${esc(r.status)}</td></tr>`).join("")}</table></div>` : `<div class="dim">nothing logged yet</div>`}
+    <div style="margin-top:8px"><a href="/api/timelog.csv?from=${d}" target="_blank">Download CSV</a></div></details>`;
+}
+
+function renderSince() {
+  const el = document.getElementById("since"); if (!sinceFeed) return;
+  const evs = (sinceFeed.events || []).slice().reverse();
+  const bl = sinceTldr && sinceTldr.bullets ? sinceTldr.bullets : [];
+  const li = x => `<li>${esc(x)}</li>`;
+  const bullets = bl.length ? `<ul>${bl.slice(0, 5).map(li).join("")}</ul>${bl.length > 5 ? `<details ${dk("since-more")}><summary>show all ${bl.length}</summary><ul>${bl.slice(5).map(li).join("")}</ul></details>` : ""}`
+    : evs.length ? `<div class="dim">summarising…</div>` : "";
+  const html = `<h2>Since you last looked <span class="n">${evs.length}</span></h2>${sinceFeed.truncated ? `<div class="dim">Showing the oldest ${evs.length}; the rest appear once you have seen these.</div>` : ""}${bullets || '<div class="green">nothing new</div>'}
+    ${evs.length ? `<details ${dk("since-ev")}><summary>${evs.length} events</summary><div class="evlist">${evs.map(evRow).join("")}</div></details>` : ""}`;
+  patch(el, html);
+}
+
+async function loadSince() {
+  try {
+    const r = await fetch(`/api/feed?after_id=${viewFrom}&order=asc`, { cache: "no-store" });
+    const f = await r.json(); if (!r.ok || !f.events) return;
+    sinceFeed = f; renderSince();
+    const rendered = f.events.reduce((m, e) => Math.max(m, e.id), 0);
+    const key = viewFrom + ":" + rendered;
+    if (key !== tldrKey && f.events.length) {
+      tldrKey = key;
+      fetch(`/api/tldr?after_id=${viewFrom}&upto=${rendered}`, { cache: "no-store" }).then(x => x.json()).then(t => { if (tldrKey === key) { sinceTldr = t; renderSince(); } }).catch(() => { if (tldrKey === key) tldrKey = ""; });
+    }
+    if (document.visibilityState === "visible" && rendered > getSeen()) {
+      visSince = visSince || Date.now();
+      if (Date.now() - visSince >= 10000) {
+        setSeen(rendered); visSince = 0;
+        if (f.truncated) { viewFrom = rendered; sinceTldr = null; tldrKey = ""; return loadSince(); }
+      }
+    } else visSince = 0;
+  } catch (e) {}
+}
+
+function epicDetail(e, t, agents, asks, tabs) {
+  const lead = agents.find(a => a.epic === e.epic && a.role === "lead");
+  const wait = lead && lead.watch ? `${lead.watch.state}: ${lead.watch.text}` : "";
+  const segList = b => Object.entries(e.segments || {}).filter(([s]) => bucketOf(s) === b).flatMap(([s, l]) => (l || []).map(sg => ({ ...sg, st: s })));
+  const li = sg => `<li><span class="tag ${sg.st === "pr-ready" ? "amber" : bucketOf(sg.st) === "bl" ? "red" : ""}">${esc(sg.st === "pr-ready" ? "ready to merge" : sg.st)}</span> <span class="mono">${esc(sg.id)}</span>${pr(e.repo, sg.pr)}${sg.note ? ` <span class="dim">— ${md(String(sg.note).slice(0, 220))}</span>` : ""}</li>`;
+  const fl = segList("fl"), bl = segList("bl"), q = segList("q"), evs = hist[e.epic];
+  return `<tr class="edet"><td colspan="5"><div class="pad">
+    <div class="dim">${t.fl}${e.max_parallel ? ` of ${e.max_parallel}` : ""} in flight${t.otherSt.length ? ` · other: ${esc(t.otherSt.join(", "))}` : ""}${wait ? ` · lead waiting on: ${md(wait.slice(0, 200))}` : ""}</div>
+    ${asks.length ? `<div><h4>Open asks</h4><ul>${asks.map(d => `<li><span class="mono dim">${esc(d.id)}</span> ${esc(d.title)}</li>`).join("")}</ul></div>` : ""}
+    ${fl.length ? `<div><h4>In flight</h4><ul>${fl.map(li).join("")}</ul></div>` : ""}
+    ${q.length ? `<div><h4>Queued</h4><ul>${q.map(li).join("")}</ul></div>` : ""}
+    ${bl.length ? `<div><h4>Blocked</h4><ul>${bl.map(li).join("")}</ul></div>` : ""}
+    <div><h4>Tabs</h4>${tabs || '<span class="dim">no tab</span>'} <div>${tabPicker(e.epic, agents)}</div></div>
+    <div class="actions" style="margin:0"><button class="ghost" data-pause="${esc(e.epic)}">Pause…</button> <button class="ghost" data-confirm="${esc(e.epic)}">${confirming[e.epic] ? "Cancel" : "Mark complete…"}</button></div>
+    <div><h4>Recent events</h4>${evs ? (evs.slice(0, 8).map(evRow).join("") || '<span class="dim">no events yet</span>') : '<span class="dim">loading…</span>'}</div>
+  </div></td></tr>${confirming[e.epic] ? confirmRow(e, t.fl, tabs) : ""}`;
+}
+
+function epicRow(e, ctx) {
+  const { agents, asks, t, idle } = ctx;
+  const tabs = agents.filter(a => a.epic === e.epic).sort((a, b) => (b.role === "lead") - (a.role === "lead")).map(a => `<span class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</span>${a.role === "lead" ? ' <span class="tag">lead</span>' : ""}`).join(" ")
+    + (e.lead && !e.lead_pane ? ` <span class="red">lead ${esc(e.lead.pane)} gone</span>` : "");
+  const leadHtml = e.lead_pane ? `<span class="mono" data-view="${esc(e.lead_pane)}">${esc(e.lead_pane)} ›</span>`
+    : e.lead ? `<span class="red">lead gone</span> <span class="mono dim">${esc(e.lead.pane)}</span>` : '<span class="dim">no lead</span>';
+  const tot = t.done + t.fl + t.q + t.bl, w = n => tot ? (n / tot * 100).toFixed(2) : 0;
+  const tip = `done ${t.done}, in flight ${t.fl}, queued ${t.q}, blocked ${t.bl}${t.other ? `, other ${t.other} (${t.otherSt.join(", ")})` : ""}`;
+  const num = (n, cls, label) => `<span class="${n ? cls : "z"}"><b>${n}</b> ${label}</span>`;
+  const progress = tot ? `<div class="pbar"><span class="p-done" style="width:${w(t.done)}%"></span><span class="p-fl" style="width:${w(t.fl)}%"></span><span class="p-q" style="width:${w(t.q)}%"></span><span class="p-bl" style="width:${w(t.bl)}%"></span></div>`
+    : `<span class="dim">no segments${t.other ? ` (${t.other} other)` : ""}</span>`;
+  const open = !!expanded[e.epic];
+  return `<tr class="erow ${open ? "open" : ""} ${idle ? "idle" : ""}" data-erow="${esc(e.epic)}" title="${esc(tip)}"><td class="c-name"><button class="etoggle" data-epichist="${esc(e.epic)}" aria-expanded="${open}"><span class="epic">${open ? "▾" : "▸"} ${esc(e.epic)}</span></button><div class="dim">${esc(e.repo)}</div></td>
+    <td data-l="Lead">${leadHtml}</td>
+    <td class="c-wide" data-l="Progress">${progress}<div class="pnums">${num(t.done, "green", "done")}${num(t.fl, "blue", "in flight")}${num(t.q, "", "queued")}${num(t.bl, "red", "blocked")}</div></td>
+    <td data-l="Open asks">${asks.length ? `<span class="asks">${asks.length}</span>` : '<span class="dim">0</span>'}</td>
+    <td class="dim" data-l="Last touched">${ago(e.mtime)} ago</td></tr>${open ? epicDetail(e, t, agents, asks, tabs) : ""}`;
 }
 
 function render(b) {
-  const full = document.getElementById("full").checked;
   const agents = b.agents || [];
-  let needs = [], n = 0;
   const decs = b.decisions || [];
   const snz = b.snoozes || {}, sleeping = [];
-  for (const d of decs.filter(d => d.status === "open")) {
-    if (snz["d:" + d.id]) sleeping.push(["d:" + d.id, decisionCard(d)]); else { n++; needs.push(decisionCard(d)); }
-  }
+  const ct = b.client_time || {};
+  const cte = document.getElementById("client-time"), showCt = !!((ct.recent || []).length || (ct.authorized || []).length);
+  patch(cte, showCt ? clientTimeHtml(ct) : ""); cte.hidden = !showCt;
+  const lte = document.getElementById("logtime"), ltHtml = logTimeHtml(ct);
+  patch(lte, ltHtml); lte.hidden = !ltHtml;
   const TAG = { blocked: ["red", "dialog"], asks: ["dim", "may ask"], unsent: ["amber", "unsent draft"] };
-  const freshS = (b.ask_fresh_hours || 2) * 3600;
-  const fresh = a => a.last_active && Date.now()/1000 - a.last_active < freshS;
   const urgent = a => a.attention === "blocked";
   const parked = agents.filter(a => !urgent(a) && a.attention !== "working" && a.attention !== "background")
     .sort((x, y) => (y.last_active || 0) - (x.last_active || 0));
@@ -300,24 +512,40 @@ function render(b) {
       ${a.summary && a.attention !== "blocked" ? `<div style="margin-top:4px">${md(a.summary)}</div>` : ""}
       ${a.screen ? `<details ${a.attention === "blocked" ? "open" : ""}><summary>last screen</summary><div class="screen">${esc(a.screen)}</div></details>` : ""}${reply}</div>`;
   };
+  const dialogRow = a => `<details class="nrow" ${dk("p:" + (a.session || a.pane))}><summary><span class="tag red">dialog</span><span class="mono dim">${esc(a.pane)}</span>
+    ${a.epic ? `<span class="tag">${esc(a.epic)}</span>` : ""}<span class="ttl">${esc(a.title)}</span><span class="dim">${a.last_active ? `active ${ago(a.last_active)} ago` : ""}</span>
+    <span class="rb"><button class="ghost" data-view="${esc(a.pane)}">View</button></span></summary><div class="nbody">${tabCard(a)}</div></details>`;
+  for (const d of decs.filter(d => d.status === "open" && snz["d:" + d.id])) sleeping.push(["d:" + d.id, decisionRow(d)]);
   for (const a of agents.filter(urgent)) {
     const k = "p:" + (a.session || a.pane);
-    if (snz[k]) sleeping.push([k, tabCard(a)]); else { n++; needs.push(tabCard(a)); }
+    if (snz[k]) sleeping.push([k, dialogRow(a)]);
   }
+  const byKey = {};
+  for (const d of decs) byKey["d:" + d.id] = () => decisionRow(d);
+  for (const i of b.interrupts || []) byKey["i:" + i.id] = () => interruptRow(i);
+  for (const t of ct.pending || []) byKey["t:" + t.item_id] = () => ticketRow(t);
+  for (const r of ct.unconfirmed || []) byKey["h:" + r.id] = () => hoursRow(r);
+  for (const a of agents) byKey["p:" + (a.session || a.pane)] = () => dialogRow(a);
+  const nitems = (b.needs || []).filter(x => byKey[x.key]);
+  const n = nitems.length, needs = nitems.map(x => byKey[x.key]());
+  const cleared = b.cleared || [];
   const answered = decs.filter(d => d.status === "answered");
   setFavicon(n > 0);
-  const html = `<h2>Needs you <span class="n">${n}</span> <span class="dim" style="text-transform:none;letter-spacing:0">· adw-ask decisions and open dialogs only</span></h2>` + (needs.join("") || `<div class="green">nothing</div>`)
-    + (sleeping.length ? `<details><summary>${sleeping.length} snoozed</summary>${sleeping.map(([k, h]) =>
+  const html = `<h2>Needs you <span class="n">${n}</span></h2>` + (needs.join("") || `<div class="green">Nothing waiting on you.</div>`)
+    + (cleared.length ? `<details ${dk("cleared")}><summary>${cleared.length} cleared without you</summary>${cleared.map(clearedRow).join("")}</details>` : "")
+    + (sleeping.length ? `<details ${dk("snoozed")}><summary>${sleeping.length} snoozed</summary>${sleeping.map(([k, h]) =>
         `<div class="actions"><span class="amber">snoozed until ${untilS(snz[k])}</span><button class="ghost" data-snooze="${esc(k)}" data-for="off">Unsnooze</button></div>${h}`).join("")}</details>` : "")
-    + (bg.length ? `<div class="dim" style="font-size:12px;margin-top:8px">Waiting on their own background agents: ${bg.map(a => esc(a.pane)).join(", ")}.</div>` : "")
-    + (answered.length ? `<details><summary>${answered.length} answered in the last 24h</summary>${answered.map(decisionCard).join("")}</details>` : "");
+    + (bg.length ? `<div class="dim" style="font-size:13px;margin-top:8px">Waiting on their own background agents: ${bg.map(a => esc(a.pane)).join(", ")}.</div>` : "")
+    + (answered.length ? `<details ${dk("answered")}><summary>${answered.length} answered in the last 24h</summary>${answered.map(decisionRow).join("")}</details>` : "");
+  patch(document.getElementById("needs"), html, el => el.querySelectorAll(".screen").forEach(x => { x.scrollTop = x.scrollHeight; }));
+
   const W = { overdue: ["amber", "overdue"], "stopped-silent": ["red", "stopped silent"], failed: ["red", "failed"], waiting: ["dim", "waiting"], done: ["green", "reported done"] };
   const watched = agents.filter(a => a.watch && W[a.watch.state]);
   const order2 = { failed: 0, "stopped-silent": 1, overdue: 2, waiting: 3, done: 4 };
   watched.sort((x, y) => order2[x.watch.state] - order2[y.watch.state]);
   const trouble = watched.filter(a => order2[a.watch.state] < 3).length;
   const until = w => w.until ? ` · until ${new Date(w.until * 1000).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "";
-  const watchHtml = watched.length ? `<details><summary><h2 style="display:inline">Watch <span class="n">${trouble ? trouble + " trouble" : ""}</span></h2>
+  const watchHtml = watched.length ? `<details class="sec" ${dk("watch")}><summary><h2 style="display:inline">Watch <span class="n">${watched.length}${trouble ? ` · ${trouble} trouble` : ""}</span></h2>
     <span class="dim"> · states tabs declared with adw-status, checked against what the tab actually did</span></summary>
     ${watched.map(a => { const [c, l] = W[a.watch.state]; return `<div class="item"><div class="row"><span class="tag ${c}">${l}</span>
       <span class="mono dim" data-view="${esc(a.pane)}">${esc(a.pane)}</span><span>${esc(a.title)}</span>${a.epic ? `<span class="tag">${esc(a.epic)}</span>` : ""}</div>
@@ -326,131 +554,82 @@ function render(b) {
   const mb = document.getElementById("mate-btn");
   mb.hidden = !b.mate_pane; mb.dataset.pane = b.mate_pane || "";
   const me = document.getElementById("mate");
-  const mateHtml = b.mate ? `<h2>First mate <span class="dim" style="text-transform:none;letter-spacing:0">· digest ${ago(b.mate.at)} ago</span></h2>
-    <div class="body" style="max-height:none">${mdBlock(b.mate.text)}</div>` : "";
-  if (me.dataset.html !== mateHtml) { me.innerHTML = mateHtml; me.dataset.html = mateHtml; me.hidden = !b.mate; }
-  const LANES = [["ready", "Ready", ["ready"]], ["building", "Building", ["building"]],
-                 ["review", "In review", ["pr-open", "pr-ready"]], ["blocked", "Blocked", ["blocked"]]];
-  const lanesHtml = LANES.map(([k, label, sts]) => {
-    const cards = b.epics.flatMap(e => sts.flatMap(st => (e.segments[st] || []).map(sg => ({ ...sg, st, e }))));
-    return `<div class="lane l-${k}"><h3><span>${label}</span><span class="dim">${cards.length}</span></h3><div class="cards">
-      ${cards.map(c => { const tab = agents.find(a => a.pane === c.e.lead_pane) || agents.find(a => a.epic === c.e.epic);
-        return `<div class="kcard"><div class="sid">${esc(c.id)}</div>
-          <div class="meta2"><span class="tag">${esc(c.e.epic)}</span>${pr(c.e.repo, c.pr)}${c.st === "pr-ready" ? '<span class="amber">ready to merge</span>' : ""}
-          ${tab ? `<span class="mono" data-view="${esc(tab.pane)}">${esc(tab.pane)}</span>` : ""}</div>
-          ${c.note && k === "blocked" ? `<div class="note">${md(c.note.slice(0, 220))}</div>` : ""}</div>`; }).join("") || '<div class="dim" style="font-size:12.5px;padding:4px">—</div>'}
-      </div></div>`;
-  }).join("");
-  const anySeg = b.epics.some(e => ["ready", "building", "pr-open", "pr-ready", "blocked"].some(st => (e.segments[st] || []).length));
-  const kanbanHtml = anySeg ? `<h2>Segments <span class="dim" style="text-transform:none;letter-spacing:0">· across active epics, from graph.json</span></h2><div class="lanes">${lanesHtml}</div>` : "";
-  const ke = document.getElementById("kanban");
-  if (ke.dataset.html !== kanbanHtml) { ke.innerHTML = kanbanHtml; ke.dataset.html = kanbanHtml; ke.hidden = !anySeg; }
+  patch(me, b.mate ? `<details class="sec" ${dk("mate")}><summary><h2 style="display:inline">First mate</h2><span class="dim"> · digest ${ago(b.mate.at)} ago</span></summary>
+    <div class="body" style="max-height:none">${mdBlock(b.mate.text)}</div></details>` : ""); me.hidden = !b.mate;
   const we = document.getElementById("watch");
-  if (we.dataset.html !== watchHtml) {
-    const open = [...we.querySelectorAll("details")].map(x => x.open);
-    we.innerHTML = watchHtml; we.dataset.html = watchHtml; we.hidden = !watched.length;
-    we.querySelectorAll("details").forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
-  }
-  const parkedHtml = parked.length ? `<details><summary><h2 style="display:inline">Parked sessions <span class="n">${parked.length}</span></h2>
-    <span class="dim"> · idle, would take a reply; newest first. "may ask" = its last message reads like a question.</span></summary>
+  patch(we, watchHtml); we.hidden = !watched.length;
+  const parkedHtml = parked.length ? `<details class="sec" ${dk("parked")}><summary><h2 style="display:inline">Parked sessions <span class="n">${parked.length}</span></h2>
+    <span class="dim"> · idle, would take a reply; newest first</span></summary>
     ${parked.map(tabCard).join("")}</details>` : "";
   const pe = document.getElementById("parked");
-  if (pe.dataset.html !== parkedHtml) {
-    const act = document.activeElement, key = act && act.dataset && act.dataset.draft, pos = key && [act.selectionStart, act.selectionEnd];
-    const open = [...pe.querySelectorAll("details")].map(x => x.open);
-    pe.innerHTML = parkedHtml; pe.dataset.html = parkedHtml; pe.hidden = !parked.length;
-    pe.querySelectorAll("details").forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
-    if (key) { const t = pe.querySelector(`[data-draft="${CSS.escape(key)}"]`); if (t) { t.focus(); t.setSelectionRange(...pos); } }
-  }
-  const el = document.getElementById("needs");
-  if (el.dataset.html !== html) {
-    const act = document.activeElement, key = act && act.dataset && act.dataset.draft, pos = key && [act.selectionStart, act.selectionEnd];
-    const open = [...el.querySelectorAll("details")].map(x => x.open);
-    el.innerHTML = html; el.dataset.html = html;
-    el.querySelectorAll(".screen").forEach(x => { x.scrollTop = x.scrollHeight; });
-    el.querySelectorAll("details").forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
-    if (key) { const t = el.querySelector(`[data-draft="${CSS.escape(key)}"]`); if (t) { t.focus(); t.setSelectionRange(...pos); } }
-  }
+  patch(pe, parkedHtml); pe.hidden = !parked.length;
 
   const live = b.epics.filter(e => !e.paused), held = b.epics.filter(e => e.paused);
-  const rows = live.map(e => {
-    const c = e.counts, fl = (c.building || 0) + (c["pr-open"] || 0), mx = e.max_parallel || 0;
-    const tabs = agents.filter(a => a.epic === e.epic).sort((a, b) => (b.role === "lead") - (a.role === "lead")).map(a => `<span class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</span>${a.role === "lead" ? ' <span class="tag">lead</span>' : ""}`).join(" ")
-      + (e.lead && !e.lead_pane ? ` <span class="red">lead ${esc(e.lead.pane)} gone</span>` : "");
-    const inflight = ["building", "pr-open"].filter(s => (e.segments[s] || []).length)
-      .map(s => `<div><span class="dim">${s}:</span> ${segs(e, e.segments[s])}</div>`).join("");
-    return `<tr class="erow"><td class="c-name"><div class="epic">${esc(e.epic)}</div><div class="dim mono">${esc(e.repo)}</div></td>
-      <td data-l="In flight">${fl}/${mx || "?"}<div class="bar ${mx && fl > mx ? "over" : ""}"><span style="width:${mx ? Math.min(100, fl/mx*100) : 0}%"></span></div></td>
-      <td data-l="Merged">${c.merged || 0}</td><td data-l="Ready">${c.ready || 0}</td><td data-l="Pending">${c.pending || 0}</td>
-      <td class="c-wide" data-l="Segments">${inflight || '<span class="dim">—</span>'}</td>
-      <td class="c-wide" data-l="Tabs">${tabs || '<span class="dim">no tab</span>'}<div>${tabPicker(e.epic, agents)}</div></td><td class="dim" data-l="Touched">${ago(e.mtime)}</td>
-      <td class="c-wide"><button class="ghost" data-pause="${esc(e.epic)}">Pause…</button> <button class="ghost" data-confirm="${esc(e.epic)}">${confirming[e.epic] ? "Cancel" : "Mark complete…"}</button></td></tr>
-      ${confirming[e.epic] ? confirmRow(e, fl, tabs) : ""}`;
-  }).join("");
-  const SHOW_EPIC_FILES = false;
-  const files = b.epics.map(e => {
-    const stuck = ["blocked", "pr-ready"].flatMap(st => (e.segments[st] || []).map(sg => ({ ...sg, st })));
-    const p = e.pending && e.pending.items.length ? e.pending : null;
-    const conductors = agents.filter(a => a.epic === e.epic).sort((a, b) => (b.role === "lead") - (a.role === "lead"));
-    if (!stuck.length && !p) return "";
-    const k = "e:" + e.epic, pane = conductors[0] && conductors[0].pane;
-    const shown = p ? (full ? p.items : p.items.slice(-5)) : [];
-    return `<div class="item"><div class="row"><span class="epic">${esc(e.epic)}</span>
-      <span class="dim">${stuck.length ? `${stuck.length} segment(s) marked blocked/pr-ready` : ""}${stuck.length && p ? " · " : ""}${p ? `PENDING.md ${p.items.length} items, updated ${ago(p.mtime)} ago` : ""}</span></div>
-      ${stuck.length ? `<ul>${stuck.map(sg => `<li><span class="tag ${sg.st === "blocked" ? "red" : "amber"}">${sg.st}</span> <span class="mono">${esc(sg.id)}</span>${pr(e.repo, sg.pr)}${sg.note ? ` <span class="dim">— ${md(sg.note)}</span>` : ""}</li>`).join("")}</ul>` : ""}
-      ${p ? `<details><summary>PENDING.md, newest ${shown.length}${shown.length < p.items.length ? ` of ${p.items.length}` : ""}</summary><ul>${shown.map(i => `<li>${md(i)}</li>`).join("")}</ul></details>` : ""}
-      ${pane ? `<textarea data-draft="${esc(k)}" placeholder="Message the ${esc(e.epic)} conductor (${esc(pane)})">${esc(drafts[k] || "")}</textarea>
-        <div class="actions"><button class="go" data-reply="${esc(pane)}" data-draftkey="${esc(k)}">Send</button>
-        <button class="ghost" data-reconcile="${esc(e.epic)}" data-pane="${esc(pane)}">Ask it to reconcile</button>
-        <button class="ghost" data-focus="${esc(pane)}">Open tab</button><span class="status" id="st-${esc(pane)}"></span></div>`
-        : `<div class="dim" style="font-size:12px;margin-top:6px">No conductor tab is running for this epic, so these entries may be out of date.</div>`}</div>`;
-  }).join("");
-  const nActive = live.filter(e => Date.now() / 1000 - e.mtime < 3 * 86400 && Object.entries(e.counts).some(([k, v]) => k !== "merged" && v)).length;
-  const epicsHtml = `<h2>Epics <span class="n">${live.length}</span> <span class="dim" style="text-transform:none;letter-spacing:0">· ${nActive} active (3d)</span></h2>
-    <div style="overflow-x:auto"><table><tr><th>Epic</th><th>In flight</th><th>Merged</th><th>Ready</th><th>Pending</th><th>Segments in flight</th><th>Tab</th><th>Touched</th><th></th></tr>${rows}</table></div>
-    ${held.length ? `<details open><summary>${held.length} on hold</summary><ul>${held.map(e =>
+  const nowS = Date.now() / 1000, openAsks = decs.filter(d => d.status === "open");
+  const items = live.map(e => {
+    const t = tally(e.counts), asks = openAsks.filter(d => d.epic === e.epic);
+    return { e, ctx: { agents, asks, t, idle: !t.fl && !t.q && nowS - e.mtime > 3 * 86400 } };
+  });
+  const prio = i => (i.ctx.asks.length || i.ctx.t.bl) ? 0 : i.ctx.idle ? 2 : 1;
+  items.sort((x, y) => (prio(x) - prio(y)) || (y.e.mtime - x.e.mtime));
+  const nActive = items.filter(i => !i.ctx.idle).length;
+  const sumFl = items.reduce((m, i) => m + i.ctx.t.fl, 0), sumBl = items.reduce((m, i) => m + i.ctx.t.bl, 0);
+  const stat = (num, label, hot) => `<span class="${hot ? "hot" : ""}"><b>${num}</b>${label}</span>`;
+  const sm = document.getElementById("summary");
+  const smHtml = stat(n, "Needs you", n > 0) + stat(nActive, "Active epics") + stat(sumFl, "Segments in flight") + stat(sumBl, "Blocked", sumBl > 0);
+  if (sm.dataset.html !== smHtml) { sm.innerHTML = smHtml; sm.dataset.html = smHtml; }
+  const rows = items.map(i => epicRow(i.e, i.ctx)).join("");
+  const epicsHtml = `<h2>Epics <span class="n">${live.length}</span> <span class="dim" style="text-transform:none;letter-spacing:0">· ${nActive} active · click a row for segments, tabs and actions</span></h2>
+    <div class="tblbox"><table><tr><th>Epic</th><th>Lead</th><th style="width:38%">Progress</th><th>Open asks</th><th>Last touched</th></tr>${rows}</table></div>
+    ${live.length ? "" : '<div class="dim">no active epics</div>'}
+    ${held.length ? `<details ${dk("held", true)}><summary>${held.length} on hold</summary><ul>${held.map(e =>
       `<li><span class="epic">${esc(e.epic)}</span> <span class="dim">${esc(e.repo)} · paused ${ago(e.paused.paused_at)} ago${e.paused.reason ? " — " + esc(e.paused.reason) : ""}</span>
        <button class="go" data-resume="${esc(e.epic)}">Resume</button><span class="status" id="st-p-${esc(e.epic)}"></span></li>`).join("")}</ul></details>` : ""}
-    ${(b.completed || []).length ? `<details><summary>${b.completed.length} completed epics</summary><ul>${b.completed.map(c =>
+    ${(b.completed || []).length ? `<details ${dk("completed")}><summary>${b.completed.length} completed epics</summary><ul>${b.completed.map(c =>
       `<li><span class="epic">${esc(c.epic)}</span> <span class="dim">${esc(c.repo)} · completed ${ago(c.completed_at)} ago</span>
        ${c.report ? `<span class="dim"> · ${c.report.active_days}d active${c.report.held_days ? ` (+${c.report.held_days}d held)` : ""} · ${c.report.prs_merged} PRs / ${c.report.segments} segs · cycle ${c.report.cycle_h_median}h · FP r${c.report.fp_rounds_median} · ${c.report.user_decisions} asks${c.report.spend_usd != null ? ` · ~$${Math.round(c.report.spend_usd)} ($${c.report.usd_per_pr}/PR)` : ""}</span>` : ""}
-       <button class="ghost" data-reopen="${esc(c.epic)}">Reopen</button></li>`).join("")}</ul></details>` : ""}
-    ${SHOW_EPIC_FILES && files ? `<h2 style="margin-top:18px">From epic files <span class="dim" style="text-transform:none;letter-spacing:0">· graph.json and PENDING.md are only as current as the conductor keeps them</span></h2>${files}` : ""}`;
-  const ee = document.getElementById("epics");
-  if (ee.dataset.html !== epicsHtml) {
-    const act = document.activeElement, key = act && act.dataset && act.dataset.draft, pos = key && [act.selectionStart, act.selectionEnd];
-    const open = [...ee.querySelectorAll("details")].map(x => x.open);
-    ee.innerHTML = epicsHtml; ee.dataset.html = epicsHtml;
-    ee.querySelectorAll("details").forEach((x, i) => { if (open[i] !== undefined) x.open = open[i]; });
-    if (key) { const t = ee.querySelector(`[data-draft="${CSS.escape(key)}"]`); if (t) { t.focus(); t.setSelectionRange(...pos); } }
-  }
+       <button class="ghost" data-reopen="${esc(c.epic)}">Reopen</button></li>`).join("")}</ul></details>` : ""}`;
+  patch(document.getElementById("epics"), epicsHtml);
 
-  if (b.agents === null) { document.getElementById("tabs").innerHTML = `<h2>Tabs</h2><div class="dim">herdr not available</div>`; return; }
-  const epicNames = b.epics.map(e => e.epic);
-  const order = { blocked: 0, done: 1, working: 2, unknown: 3, idle: 4 };
   const pins = b.pins || [], pinKey = a => a.session ? "s:" + a.session : "p:" + a.pane;
   const pinned = pins.map(k => (agents || []).find(a => pinKey(a) === k)).filter(Boolean);
-  const pinHtml = pinned.map(a => `<button class="go" data-view="${esc(a.pane)}" style="align-self:center;min-height:40px" title="${esc(a.pane)}">
+  const pinHtml = pinned.map(a => `<button class="ghost" data-view="${esc(a.pane)}" title="${esc(a.pane)}">
     <span class="${{ blocked: "red", done: "amber", working: "green" }[a.status] || "dim"}">●</span> ${esc(a.title && a.title !== "Claude Code" ? a.title : (a.epic || a.pane))} ›</button>`).join("");
   const pinEl = document.getElementById("pins");
   if (pinEl.dataset.html !== pinHtml) { pinEl.innerHTML = pinHtml; pinEl.dataset.html = pinHtml; }
+  const tabsEl = document.getElementById("tabs");
+  if (b.agents === null) { patch(tabsEl, `<h2>Tabs</h2><div class="dim">herdr not available</div>`); return; }
+  const epicNames = b.epics.map(e => e.epic);
+  const order = { blocked: 0, done: 1, working: 2, unknown: 3, idle: 4 };
   const isPinned = a => pins.includes(pinKey(a));
-  const t = [...agents].sort((a, b) => (isPinned(b) - isPinned(a)) || ((order[a.status] ?? 9) - (order[b.status] ?? 9)));
+  const tl = [...agents].sort((a, b) => (isPinned(b) - isPinned(a)) || ((order[a.status] ?? 9) - (order[b.status] ?? 9)));
   const cls = { blocked: "red", done: "amber", working: "green" };
-  document.getElementById("tabs").innerHTML = `<h2>Tabs <span class="n">${agents.length}</span>
-    <span class="dim">· ${agents.filter(a => a.status === "working").length} working · ${agents.filter(a => a.status === "idle").length} idle</span></h2>
-    <details ${t.some(a => a.status !== "idle") ? "open" : ""}><summary>show all</summary><table class="wrap"><tr><th></th><th>Pane</th><th>State</th><th>Attention</th><th>Active</th><th>Agent</th><th>Title</th><th>Epic</th><th>Dir</th></tr>
-    ${t.map(a => `<tr><td><button class="ghost" data-pin="${esc(pinKey(a))}" data-on="${isPinned(a) ? "" : "1"}" title="${isPinned(a) ? "Unpin" : "Pin to the top bar"}">${isPinned(a) ? "★" : "☆"}</button></td><td class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</td><td class="${cls[a.status] || "dim"}">${esc(a.status)}</td><td class="dim">${esc(a.attention)}</td><td class="dim">${a.last_active ? ago(a.last_active) : "?"}</td><td>${esc(a.kind)}</td>
-      <td>${esc(a.title)}</td><td>${a.role === "lead" ? `<span class="tag">lead</span> ${esc(a.epic)}` : linkSelect(a.pane, a.linked ? a.epic : "", epicNames)}${a.epic && !a.linked ? ` <span class="dim" style="font-size:11px">guess: ${esc(a.epic)}</span>` : ""}</td><td class="dim mono">${esc(a.cwd)}</td></tr>`).join("")}</table></details>`;
+  patch(tabsEl, `<details class="sec" ${dk("tabs")}><summary><h2 style="display:inline">Tabs <span class="n">${agents.length}</span></h2>
+    <span class="dim"> · ${agents.filter(a => a.status === "working").length} working · ${agents.filter(a => a.status === "idle").length} idle</span></summary>
+    <div class="tblbox"><table><tr><th></th><th>Pane</th><th>State</th><th>Attention</th><th>Active</th><th>Agent</th><th>Title</th><th>Epic</th><th>Dir</th></tr>
+    ${tl.map(a => `<tr><td><button class="ghost" data-pin="${esc(pinKey(a))}" data-on="${isPinned(a) ? "" : "1"}" title="${isPinned(a) ? "Unpin" : "Pin to the top bar"}">${isPinned(a) ? "★" : "☆"}</button></td><td class="mono" data-view="${esc(a.pane)}">${esc(a.pane)}</td><td class="${cls[a.status] || "dim"}">${esc(a.status)}</td><td class="dim">${esc(a.attention)}</td><td class="dim">${a.last_active ? ago(a.last_active) : "?"}</td><td>${esc(a.kind)}</td>
+      <td>${esc(a.title)}</td><td>${a.role === "lead" ? `<span class="tag">lead</span> ${esc(a.epic)}` : linkSelect(a.pane, a.linked ? a.epic : "", epicNames)}${a.epic && !a.linked ? ` <span class="dim" style="font-size:11px">guess: ${esc(a.epic)}</span>` : ""}</td><td class="dim mono">${esc(a.cwd)}</td></tr>`).join("")}</table></div></details>`);
 }
 
+document.addEventListener("click", async e => {
+  const row = e.target.closest("[data-erow]");
+  const c = e.target.closest("[data-epichist]") || (row && !e.target.closest("button, a, select, textarea, input, [data-view]") ? row : null);
+  if (!c) return;
+  const ep = c.dataset.epichist || c.dataset.erow; expanded[ep] = !expanded[ep];
+  last && render(last);
+  if (expanded[ep]) {
+    try { hist[ep] = (await (await fetch(`/api/feed?epic=${encodeURIComponent(ep)}&after_id=0`, { cache: "no-store" })).json()).events || []; }
+    catch (err) { hist[ep] = []; }
+    last && render(last);
+  }
+});
 document.addEventListener("input", e => {
   const k = e.target.dataset && e.target.dataset.draft; if (!k) return;
   drafts[k] = e.target.value;
   if (k.startsWith("c:")) { const btn = document.querySelector(`[data-complete="${CSS.escape(k.slice(2))}"]`); if (btn) btn.disabled = e.target.value !== k.slice(2); }
 });
 document.addEventListener("click", async e => {
-  const t = e.target.closest("button"); if (!t) return;
+  const t = e.target.closest("button"); if (!t) { disarm(); return; }
   const ds = t.dataset;
   if (ds.confirm) { confirming[ds.confirm] = !confirming[ds.confirm]; delete drafts["c:" + ds.confirm]; last && render(last); return; }
   if (ds.complete || ds.reopen) {
@@ -469,11 +648,61 @@ document.addEventListener("click", async e => {
     catch (err) { t.disabled = false; alert(err.message); }
     return;
   }
+  if (armed && !(ds.quick && armed.id === ds.quick && armed.key === ds.key)) disarm();
+  if (!t.isConnected) return;
+  if (ds.quick) {
+    const id = ds.quick, st = document.getElementById("st-q-" + id);
+    if (Date.now() - needsPatchedAt < 1000) return;
+    if (!armed) {
+      armed = { id, key: ds.key, label: t.textContent, timer: setTimeout(disarm, 4000) };
+      t.textContent = `Confirm ${ds.key}?`; t.classList.add("armed"); return;
+    }
+    clearTimeout(armed.timer); armed = null;
+    t.disabled = true; if (st) st.textContent = "sending…";
+    try { const r = await post("/api/answer", { id, choice: ds.key, note: drafts["d:" + id] || "" }); delete drafts["d:" + id]; delete picks[id]; if (st) st.textContent = r.delivered ? "delivered" : (r.delivery_error || "recorded"); tick(); }
+    catch (err) { t.disabled = false; if (st) st.textContent = err.message; else alert(err.message); }
+    return;
+  }
   if (ds.pick) { picks[ds.pick] = picks[ds.pick] === ds.key ? undefined : ds.key; last && (document.getElementById("needs").dataset.html = "", render(last)); return; }
   if (ds.pin) {
     t.disabled = true;
     try { await post("/api/pin", { key: ds.pin, on: !!ds.on }); tick(); }
     catch (err) { t.disabled = false; alert(err.message); }
+    return;
+  }
+  if (ds.ack) {
+    t.disabled = true;
+    try { await post("/api/interrupt-ack", { id: Number(ds.ack) }); tick(); }
+    catch (err) { t.disabled = false; const st = document.getElementById("st-ack-" + ds.ack); if (st) st.textContent = err.message; else alert(err.message); }
+    return;
+  }
+  if (ds.ireopen) {
+    t.disabled = true;
+    try { await post("/api/interrupt-reopen", { id: Number(ds.ireopen) }); tick(); }
+    catch (err) { t.disabled = false; const st = document.getElementById("st-ireopen-" + ds.ireopen); if (st) st.textContent = err.message; else alert(err.message); }
+    return;
+  }
+  if (ds.ticket) {
+    t.disabled = true;
+    try { await post("/api/ticket-decision", { item_id: ds.ticket, decision: ds.decision }); tick(); }
+    catch (err) { t.disabled = false; const st = document.getElementById("st-tk-" + ds.ticket); if (st) st.textContent = err.message; else alert(err.message); }
+    return;
+  }
+  if (ds.wc) {
+    t.disabled = true;
+    try { await post("/api/work-confirm", { id: Number(ds.wc), hours: drafts["h:" + ds.wc] ?? t.closest(".actions").querySelector("input").value }); delete drafts["h:" + ds.wc]; tick(); }
+    catch (err) { t.disabled = false; const st = document.getElementById("st-wc-" + ds.wc); if (st) st.textContent = err.message; else alert(err.message); }
+    return;
+  }
+  if (ds.lt) {
+    const row = t.closest(".actions"), sel = row.querySelector("select"), st = row.querySelector("#st-lt");
+    t.disabled = true;
+    try {
+      await post("/api/work-log", { item_id: drafts["lt:item"] || sel.value, hours: drafts["lt:hours"] || "", note: drafts["lt:note"] || "" });
+      delete drafts["lt:hours"]; delete drafts["lt:note"];
+      row.querySelectorAll("input").forEach(i => { i.value = ""; });
+      t.disabled = false; if (st) st.textContent = "logged"; tick();
+    } catch (err) { t.disabled = false; if (st) st.textContent = err.message; else alert(err.message); }
     return;
   }
   if (ds.snooze) {
@@ -625,6 +854,16 @@ function closeViewer() {
 $("v-close").addEventListener("click", closeViewer);
 document.addEventListener("keydown", e => { if (e.key === "Escape" && vPane && document.activeElement !== $("v-text")) closeViewer(); });
 $("v-focus").addEventListener("click", () => vPane && post("/api/focus", { pane: vPane }).catch(e => $("v-st").textContent = e.message));
+const KEYS_KEY = "board.viewerKeys";
+function setKeys(on, save) {
+  $("viewer").classList.toggle("keys-on", on);
+  $("v-keys").setAttribute("aria-pressed", String(on));
+  $("v-keys").title = on ? "Hide keys" : "Show keys";
+  if (save) { try { localStorage.setItem(KEYS_KEY, on ? "1" : "0"); } catch (e) {} }
+}
+(() => { let v = null; try { v = localStorage.getItem(KEYS_KEY); } catch (e) {}
+  setKeys(v === null ? matchMedia("(min-width: 521px)").matches : v === "1", false); })();
+$("v-keys").addEventListener("click", () => setKeys(!$("viewer").classList.contains("keys-on"), true));
 document.querySelectorAll("#viewer [data-key]").forEach(b => b.addEventListener("click", async e => {
   e.stopPropagation();
   try { await post("/api/keys", { pane: vPane, keys: [b.dataset.key] }); setTimeout(vRefresh, 300); }
@@ -661,12 +900,11 @@ async function tick() {
   try {
     const r = await fetch("/api/board", { cache: "no-store" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    last = await r.json(); render(last);
+    last = await r.json(); render(last); loadSince();
     document.getElementById("err").textContent = "";
     document.getElementById("meta").textContent = `updated ${new Date(last.generated * 1000).toLocaleTimeString()} · refreshes every 10s`;
   } catch (e) { document.getElementById("err").textContent = `refresh failed: ${e.message}`; }
 }
-document.getElementById("full").addEventListener("change", () => last && render(last));
 tick(); setInterval(tick, 10000);
 </script>
 </body>

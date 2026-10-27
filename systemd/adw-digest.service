@@ -1,0 +1,9 @@
+[Unit]
+Description=ADW digest post to the owner's Slack DM
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.claude/adw/events.env
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/flock -w 240 %h/.claude/adw/events.lock /usr/bin/python3 %h/.claude/adw/board/events.py digest-post
+TimeoutStartSec=360

@@ -1,0 +1,23 @@
+{
+  "monday_include_regex": "^[IM]\\s*-\\s*\\S",
+  "monday_workspace": "Main workspace",
+  "monday_include_boards": [],
+  "monday_exclude_boards": [],
+  "monday_deny_boards": [],
+  "monday_epics": {},
+  "monday_mention_terms": [],
+  "linear_mention_terms": ["@your-handle"],
+  "linear_teams": [],
+  "slack_channels": [],
+  "slack_owner_id": "",
+  "slack_digest_channel": "",
+  "slack_every_minutes": 10,
+  "slack_max_history_calls": 10,
+  "slack_max_threads": 10,
+  "first_mate_pane": "w1:p2",
+  "timezone": "UTC",
+  "wake_rate_limit_s": 600,
+  "haiku_model": "claude-haiku-5-5",
+  "backfill_minutes": 60,
+  "route_budget_s": 120
+}

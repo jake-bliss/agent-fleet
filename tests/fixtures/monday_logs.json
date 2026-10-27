@@ -1,0 +1,40 @@
+{
+  "data": {
+    "boards": [
+      {
+        "id": "111",
+        "name": "I - Acme",
+        "activity_logs": [
+          {
+            "id": "1",
+            "event": "update_column_value",
+            "created_at": "17930148000000000",
+            "user_id": "9",
+            "data": "{\"column_type\": \"color\", \"pulse_id\": 901, \"pulse_name\": \"Launch 1\", \"value\": {\"label\": {\"text\": \"Stuck\"}}}"
+          },
+          {
+            "id": "2",
+            "event": "update_column_value",
+            "created_at": "17930148000000000",
+            "user_id": "9",
+            "data": "{\"column_type\": \"color\", \"pulse_id\": 902, \"pulse_name\": \"Launch 2\", \"value\": {\"label\": {\"text\": \"Done\"}}}"
+          },
+          {
+            "id": "3",
+            "event": "update_column_value",
+            "created_at": "17930148000000000",
+            "user_id": "9",
+            "data": "{\"column_type\": \"text\", \"pulse_id\": 903, \"pulse_name\": \"Launch 3\", \"value\": {\"label\": {\"text\": \"Stuck\"}}}"
+          },
+          {
+            "id": "4",
+            "event": "create_pulse",
+            "created_at": "17930148000000000",
+            "user_id": "9",
+            "data": "{\"column_type\": \"color\", \"pulse_id\": 904, \"pulse_name\": \"Launch 4\", \"value\": {\"label\": {\"text\": \"Working on it\"}}}"
+          }
+        ]
+      }
+    ]
+  }
+}

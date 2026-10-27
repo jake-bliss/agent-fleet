@@ -1,0 +1,9 @@
+[Unit]
+Description=ADW event poll (Linear, Monday, Slack, fleet)
+
+[Service]
+Type=oneshot
+EnvironmentFile=-%h/.claude/adw/events.env
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/flock -n %h/.claude/adw/events.lock /usr/bin/python3 %h/.claude/adw/board/events.py poll
+TimeoutStartSec=300

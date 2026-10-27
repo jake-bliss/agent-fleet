@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "channels": [
+    {
+      "id": "C9",
+      "is_im": false
+    },
+    {
+      "id": "D1",
+      "is_im": true,
+      "user": "UPAT"
+    }
+  ],
+  "response_metadata": {
+    "next_cursor": ""
+  }
+}

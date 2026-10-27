@@ -1,0 +1,21 @@
+{
+  "ok": true,
+  "has_more": false,
+  "messages": [
+    {
+      "ts": "1793014800.000100",
+      "user": "UPAT",
+      "text": "hey, quick question about the report"
+    },
+    {
+      "ts": "1793014810.000100",
+      "user": "UOWNER1",
+      "text": "ok will do"
+    },
+    {
+      "ts": "1793014820.000100",
+      "user": "UOWNER1",
+      "text": "replied for you\n\nSent using Claude"
+    }
+  ]
+}

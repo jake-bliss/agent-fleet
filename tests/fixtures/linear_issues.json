@@ -1,0 +1,175 @@
+{
+  "data": {
+    "issues": {
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": null
+      },
+      "nodes": [
+        {
+          "id": "i-ENG-101",
+          "identifier": "ENG-101",
+          "title": "Checkout bug",
+          "url": "https://linear.app/acme/issue/ENG-101",
+          "updatedAt": "2026-10-26T11:59:00Z",
+          "comments": {
+            "nodes": [
+              {
+                "id": "c1",
+                "body": "Can you confirm the fix covers refunds?",
+                "createdAt": "2026-10-26T11:30:00Z",
+                "url": "https://linear.app/c/c1",
+                "user": {
+                  "id": "u-dana",
+                  "name": "Dana QA",
+                  "isMe": false
+                },
+                "botActor": null
+              },
+              {
+                "id": "c2",
+                "body": "ack",
+                "createdAt": "2026-10-26T11:40:00Z",
+                "url": "https://linear.app/c/c2",
+                "user": {
+                  "id": "u-owner",
+                  "name": "Pat",
+                  "isMe": true
+                },
+                "botActor": null
+              },
+              {
+                "id": "c3",
+                "body": "Posted the reply.\n\n_Sent using Claude_",
+                "createdAt": "2026-10-26T11:41:00Z",
+                "url": "https://linear.app/c/c3",
+                "user": {
+                  "id": "u-owner",
+                  "name": "Pat",
+                  "isMe": true
+                },
+                "botActor": null
+              },
+              {
+                "id": "c4",
+                "body": "PR merged",
+                "createdAt": "2026-10-26T11:45:00Z",
+                "url": "https://linear.app/c/c4",
+                "user": null,
+                "botActor": {
+                  "name": "GitHub"
+                }
+              },
+              {
+                "id": "c5",
+                "body": "old comment before the cursor",
+                "createdAt": "2026-10-26T09:00:00Z",
+                "url": "https://linear.app/c/c5",
+                "user": {
+                  "id": "u-dana",
+                  "name": "Dana QA",
+                  "isMe": false
+                },
+                "botActor": null
+              },
+              {
+                "id": "c6",
+                "body": "done",
+                "createdAt": "2026-10-26T11:42:00Z",
+                "url": "https://linear.app/c/c6",
+                "user": {
+                  "id": "u-owner",
+                  "name": "Pat",
+                  "isMe": true
+                },
+                "botActor": null
+              }
+            ]
+          },
+          "history": {
+            "nodes": [
+              {
+                "id": "h1",
+                "createdAt": "2026-10-26T11:50:00Z",
+                "actor": {
+                  "id": "u-dana",
+                  "name": "Dana QA",
+                  "isMe": false
+                },
+                "botActor": null,
+                "fromState": {
+                  "type": "completed"
+                },
+                "toState": {
+                  "type": "started"
+                },
+                "fromPriority": 3,
+                "toPriority": 3
+              },
+              {
+                "id": "h2",
+                "createdAt": "2026-10-26T11:51:00Z",
+                "actor": null,
+                "botActor": {
+                  "name": "GitHub"
+                },
+                "fromState": {
+                  "type": "completed"
+                },
+                "toState": {
+                  "type": "started"
+                },
+                "fromPriority": 3,
+                "toPriority": 3
+              },
+              {
+                "id": "h3",
+                "createdAt": "2026-10-26T11:52:00Z",
+                "actor": {
+                  "id": "u-dana",
+                  "name": "Dana QA",
+                  "isMe": false
+                },
+                "botActor": null,
+                "fromState": {
+                  "type": "started"
+                },
+                "toState": {
+                  "type": "started"
+                },
+                "fromPriority": 3,
+                "toPriority": 1
+              }
+            ]
+          }
+        },
+        {
+          "id": "i-ENG-777",
+          "identifier": "ENG-777",
+          "title": "Unmapped thing",
+          "url": "https://linear.app/acme/issue/ENG-777",
+          "updatedAt": "2026-10-26T11:20:00Z",
+          "comments": {
+            "nodes": [
+              {
+                "id": "c7",
+                "body": "@pat please change the copy on the banner",
+                "createdAt": "2026-10-26T11:20:00Z",
+                "url": "https://linear.app/c/c7",
+                "user": {
+                  "id": "u-sam",
+                  "name": "Sam",
+                  "isMe": false
+                },
+                "botActor": null
+              }
+            ]
+          },
+          "history": {
+            "nodes": []
+          }
+        }
+      ]
+    }
+  }
+}
