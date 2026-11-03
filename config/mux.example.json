@@ -1,0 +1,6 @@
+{
+  "hc_bin": "hc",
+  "hc_space": "",
+  "hc_nodes": ["node-a", "node-b"],
+  "shared_machines": []
+}

@@ -1,3 +1,7 @@
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent))
+import _isolate  # noqa: F401,E402
 import contextlib
 import io
 import json
@@ -514,10 +518,11 @@ class TestHaikuIsolation(Base):
 
     def test_missing_herdr_logs_once_and_holds(self):
         err = io.StringIO()
-        with mock.patch.object(events.shutil, "which", return_value=None), contextlib.redirect_stderr(err):
+        with mock.patch.object(events.shutil, "which", return_value=None), \
+                mock.patch.object(events.asks.mux, "available", return_value=False), contextlib.redirect_stderr(err):
             self.assertIsNone(ORIG_FLEET())
             self.assertIsNone(ORIG_FLEET())
-        self.assertEqual(err.getvalue().count("herdr is not installed"), 1)
+        self.assertEqual(err.getvalue().count("neither herdr nor hc is installed"), 1)
 
 
 class TestMonday(Base):

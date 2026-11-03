@@ -103,9 +103,9 @@ active time and stay local until you confirm them.
 ## adw-ask: decisions for you
 
 ```bash
-adw-ask new --title "<one line>" --epic <slug> --body-file /tmp/ask.md \
+adw-ask new --class <class> --title "<one line>" --epic <slug> --body-file /tmp/ask.md \
   --option "a=<choice>" --option "b=<choice>" --recommend a \
-  [--default-after 4h]                                           # prints d-xxxxxx
+  [--default-after 4h]                                           # prints d-xxxxxx; classes: see Classes below
 adw-ask list [--all] [--json]
 adw-ask show <id>
 adw-ask wait <id> [--timeout SECONDS]     # blocks until answered
@@ -142,6 +142,16 @@ Use it only for reversible decisions with a clear recommendation. Never for:
 - customer data.
 
 Those wait for you, however long it takes.
+
+### Classes
+
+Every `adw-ask new` passes `--class` (it is refused without one). Gated classes always wait for you: `merge`,
+`prod-write`, `money`, `auth`, `customer-data`, `scope`, `irreversible`. Non-gated classes are `reversible`,
+`design`, `split`, `redesign`, `fix-streak`, `size`, `sequencing`: with `--recommend`, and no gated wording in the
+title or body (the ask is scanned for it), the recommendation is applied at once, recorded `by: auto`, and shown in
+the board's "Auto-applied (24h)" list so you can overrule it. The first mate may answer with `--by mate` on a
+standing order from you, or relay your words with `--relay "<your words>"`; a relayed answer never counts as your
+own click on a policy epic's merge. Relays to a lead or tab go by `adw-mux send`, never `adw-ask new`.
 
 ## adw-status: tabs declare their state
 
@@ -197,6 +207,28 @@ You -> first mate -> epic leads -> crew.
 
 Review how the first mate is doing after about a week: its `$ADW_HOME/firstmate/notes.md` records every wake and
 nudge.
+
+## Requests: the queue of ad-hoc asks
+
+`req` is one queue for asks that do not belong to an epic: `req add "<what>" --who <person> [-p P0-P3] [--due DATE]
+[--link URL]`, then `req ls`, `req show`, `req set <id> --owner <terminal|epic>`, `req doing`, `req wait <id> "<on
+what>"`, `req done <id> "<what>"`, and `req told <id>` once the asker has heard back. State is
+`$ADW_HOME/state/requests.json`. The board lists open requests, the digest has a Requests section, and a stale or
+overdue one raises a `request` line for the first mate. On a machine without `$ADW_HOME/board/reqs.py`, set
+`ADW_HUB=user@host` and `req` forwards over ssh to the hub's queue.
+
+## Planning stage and the herdr app backend
+
+An epic starts in planning when created with `adw-lead-state init <epic> <repo> "<goal>" --planning`
+(`PLANNING.json`). The `/plan-epic` skill fills `plan.md` with you; `adw-lead-state handoff <epic> <segments> <lines>
+"<summary>"` writes `READY.json`, after which the board shows the epic as ready and the first mate starts its lead.
+While planning, `adw-lead-state ready` dispatches nothing and `adw-status lead` refuses registration. The status
+banner warns when the graph grows past twice the forecast.
+
+The board and `adw-ask` drive two terminal backends: the herdr CLI (pane ids like `w1:p2`) and the herdr app's
+`hc` (terminal ids `t7`, or `<machine>/t7` on another node). `adw-mux` is the command line for the second;
+`$ADW_HOME/mux.json` (from `config/mux.example.json`) names the `hc` binary, the optional space and the node names.
+The `hc-session-state.sh` hook records each terminal's session id so the board can match terminals to sessions.
 
 ## Running it under launchd
 

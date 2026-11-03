@@ -14,7 +14,7 @@ rather than adopt it: read `docs/way-of-working.md`, take the parts that fit, an
 ## Who it's for
 
 People already running many Claude Code (and Codex) agents at once in
-herdr, who want those agents to carry work to a reviewed,
+herdr (the TUI CLI or the herdr app, `hc`), who want those agents to carry work to a reviewed,
 merged PR without being supervised turn by turn — and who want one place to see what needs them.
 
 ## Requirements
@@ -22,9 +22,9 @@ merged PR without being supervised turn by turn — and who want one place to se
 - macOS for `cow-worktree`'s copy-on-write cloning (APFS `clonefile`); elsewhere it falls back to a
   plain `git worktree add`, and `--launchd` is macOS-only
 - Python 3.11+ (stdlib only)
-- git, the GitHub CLI (`gh`), herdr, Claude Code
+- git, the GitHub CLI (`gh`), herdr (CLI) and/or the herdr app's `hc`, Claude Code
 - Claude Code subagents named `worker`, `reviewer`, `codex` and `adw-conductor`; the skills dispatch them
-  by name, so copy or link the examples in `agents/` into `~/.claude/agents/`
+  by name (the first mate also uses `mate-triage`), so copy or link the examples in `agents/` into `~/.claude/agents/`
 - Codex CLI — optional, but the cross-model review assumes it (`codex-review` also needs `gtimeout` or `timeout`)
 - `$ADW_HOME/pr-tools.json` (from `config/pr-tools.example.json`) for the PR tools. Without
   it `pr-ship` refuses every merge
@@ -60,19 +60,23 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `skills/*/SKILL.md`, `skills/*/references/` | each skill's operative rules; the rationale behind them sits in `references/` |
 | `skills/adw/` | `/adw` — one segment to a merged PR |
 | `skills/adw-lead/` | `/adw-lead` — the epic conductor |
-| `skills/first-mate/`, `skills/continue/` | the fleet overseer tab, and jumping to one board item |
+| `skills/first-mate/`, `skills/continue/` | the fleet overseer tab (watching, requests, planning handoff, triage in a child), and jumping to one board item |
+| `skills/plan-epic/` | `/plan-epic`: plan an epic with you in one tab, then hand it to the first mate (`adw-lead-state init --planning`, `handoff`) |
 | `skills/retro/`, `skills/efficiency-review/`, `skills/herdr/` | session retrospective, weekly spend review, driving herdr |
-| `board/` | the ADW Board, `adw-ask` (decision queue), `adw-status` (tab state), `adw-epic-report` (per-epic cost and cycle report) |
+| `board/` | the ADW Board, `adw-ask` (decision queue), `adw-status` (tab state), `adw-epic-report` (per-epic cost and cycle report), `reqs.py` (request queue), `mux.py` and `terminals.py` (herdr app terminal control and live terminal map) |
 | `bin/` | `cow-worktree`, `ci-preflight`, `review-receipt`, the pre-push gate, `adw-lead-state`, pruning |
+| `bin/req` | `req add\|ls\|show\|set\|doing\|wait\|done\|told`: the queue of ad-hoc asks, kept in `$ADW_HOME/state/requests.json`; shown on the board and the digest, stale ones wake the first mate |
+| `bin/adw-mux` | `adw-mux list\|get\|send\|read\|keys\|focus\|run` for herdr app terminals (ids `t7` or `<machine>/t7`; config `$ADW_HOME/mux.json` from `config/mux.example.json`) |
+| `bin/review-tier`, `mate-cost` | `review-tier <worktree>` prints high or low for a diff (the gate refuses a Claude-review skip on high); `mate-cost` reports the first mate's daily context and cost |
 | `bin/pr-state`, `pr-ship`, `pr-reply` | PR CI/review/merge state, rule-gated merge, review-thread replies; configured by `$ADW_HOME/pr-tools.json` |
 | `bin/codex-review`, `claude-review`, `efficiency-report` | second-model review, headless Claude review (both write a verdict file for `review-receipt --report`), context-spend report |
 | `bin/adw-tick`, `adw-disk-check` | cheap lead wake check; host disk reading the board alerts on |
-| `hooks/` | `tool-adoption`, `model-pin`, `cross-model-review` Claude Code hooks, and herdr's state hook; see `docs/hooks.md` |
-| `tests/` | `test_pr_tools.py` |
+| `hooks/` | `tool-adoption`, `model-pin`, `cross-model-review`, `compact-resume`, `hc-session-state` Claude Code hooks, and herdr's state hook; see `docs/hooks.md` |
+| `tests/` | unit tests (`python3 -m unittest discover -s tests`); every test isolates `ADW_HOME` and the `hc` binary |
 | `review/` | the shared review contract and the lenses reviewers apply |
 | `config/` | example configs, copied into `$ADW_HOME` by the installer |
 | `launchd/` | the board's launchd template |
-| `agents/` | example subagents: `worker`, `reviewer`, `codex`, `adw-conductor` |
+| `agents/` | example subagents: `worker`, `reviewer`, `codex`, `adw-conductor`, `mate-triage` |
 | `docs/hooks.md` | what each hook does and the `settings.json` snippet to register them |
 | `docs/way-of-working.md` | the whole method in two pages — start here |
 | `docs/board.md` | the fleet layer: board, decisions, status, first mate |

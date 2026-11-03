@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Per-day cost of the first-mate session and its child (subagent) sessions.
+
+Usage: mate-cost [--projects-dir DIR]   (default: every project under ~/.claude/projects)
+Prices are per million tokens: input, cache read, cache write, output.
+"""
+import collections
+import glob
+import json
+import os
+import sys
+
+args = sys.argv[1:]
+root = args[args.index("--projects-dir") + 1] if "--projects-dir" in args else "~/.claude/projects/*"
+files = glob.glob(os.path.join(os.path.expanduser(root), "*.jsonl"))
+mate = []
+for f in files:
+    first = None
+    for line in open(f, errors="ignore"):
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if o.get("type") == "user":
+            c = (o.get("message") or {}).get("content")
+            first = c if isinstance(c, str) else json.dumps(c)
+            break
+    if first and "<command-name>/first-mate</command-name>" in first:
+        mate.append(f)
+PRICE = {"opus": (5, 0.5, 6.25, 25), "sonnet": (3, 0.3, 3.75, 15), "haiku": (1, 0.1, 1.25, 5)}
+day = collections.defaultdict(lambda: [0, 0, 0, 0])
+child = collections.defaultdict(float)
+for f in mate + [c for f in mate for c in glob.glob(f[:-6] + "/subagents/*.jsonl")]:
+    is_child = "/subagents/" in f
+    seen = set()
+    for line in open(f, errors="ignore"):
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        m = o.get("message") or {}
+        u = m.get("usage")
+        if o.get("type") != "assistant" or not u:
+            continue
+        mid = m.get("id")
+        if mid in seen:
+            continue
+        seen.add(mid)
+        d = o.get("timestamp", "")[:10]
+        ctx = u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0) + u.get("cache_creation_input_tokens", 0)
+        p = next((v for k, v in PRICE.items() if k in m.get("model", "")), PRICE["opus"])
+        cost = (u.get("input_tokens", 0) * p[0] + u.get("cache_read_input_tokens", 0) * p[1]
+                + u.get("cache_creation_input_tokens", 0) * p[2] + u.get("output_tokens", 0) * p[3]) / 1e6
+        if is_child:
+            child[d] += cost
+            continue
+        r = day[d]
+        r[0] += 1
+        r[1] += ctx
+        r[2] += cost
+        r[3] = max(r[3], ctx)
+print("files:", [os.path.basename(f)[:8] for f in mate])
+print("day         calls  avg_ctx  max_ctx  mate$  child$  total$")
+for d in sorted(set(day) | set(child))[-10:]:
+    c, ctx, cost, mx = day.get(d, [0, 0, 0, 0])
+    print(f"{d}  {c:6d}  {ctx//max(c,1)//1000:5d}k  {mx//1000:5d}k  {cost:6.1f}  {child[d]:6.1f}  {cost + child[d]:6.1f}")

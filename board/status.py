@@ -28,8 +28,7 @@ LINE = re.compile(r"^(\S+) (\w+): (.*?)(?: until (\S+))?$")
 
 
 def pane_ref(pane):
-    m = os.environ.get("ADW_MACHINE")
-    return f"{m}/{pane}" if m and pane and "/" not in pane else pane
+    return load_asks().pane_ref(pane)
 
 
 def iso(dt):
@@ -41,12 +40,8 @@ def parse_iso(s):
 
 
 def session_for(pane):
-    r = subprocess.run(["herdr", "agent", "get", pane], capture_output=True, text=True, timeout=15)
-    if r.returncode != 0:
-        return None
-    a = json.loads(r.stdout)["result"]
-    a = a.get("agent", a)
-    return (a.get("agent_session") or {}).get("value")
+    info = load_asks().agent_info(pane)
+    return info and info.get("session")
 
 
 def load_asks():
@@ -58,13 +53,7 @@ def load_asks():
 
 
 def session_live(session):
-    asks = load_asks()
-    for machine in [None, *asks.live_remotes()]:
-        out, _ = asks.herdr("agent", "list", machine=machine)
-        if out and any((x.get("agent_session") or {}).get("value") == session
-                       for x in json.loads(out)["result"]["agents"]):
-            return True
-    return False
+    return any((x.get("agent_session") or {}).get("value") == session for x in load_asks().list_agents() or [])
 
 
 def rebind_asks(epic, prev, session, pane):
@@ -127,9 +116,9 @@ def main():
     ap.add_argument("--refreshable", action="store_true")
     ap.add_argument("--takeover", action="store_true")
     a = ap.parse_args()
-    pane = a.pane or os.environ.get("HERDR_PANE_ID")
+    pane = a.pane or load_asks().own_pane()
     if not pane:
-        raise SystemExit("adw-status: not in a herdr pane (HERDR_PANE_ID unset); nothing recorded")
+        raise SystemExit("adw-status: not in a herdr pane (HERDR_PANE_ID / HC_TERMINAL_ID unset); nothing recorded")
     session = session_for(pane)
     if not session:
         raise SystemExit(f"adw-status: no agent session found in pane {pane}")
@@ -140,6 +129,8 @@ def main():
         epic = a.text.strip()
         if not epic or not (EPICS / epic / "graph.json").exists():
             raise SystemExit(f"adw-status lead: no epic {epic!r} under {EPICS}")
+        if (EPICS / epic / "PLANNING.json").exists() and not (EPICS / epic / "READY.json").exists():
+            raise SystemExit(f"adw-status lead: {epic} is still being planned; a lead starts after adw-lead-state handoff")
         try:
             prev = json.loads((EPICS / epic / "lead.json").read_text())
         except (OSError, ValueError):

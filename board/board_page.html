@@ -342,6 +342,15 @@ function tally(counts) {
   return t;
 }
 
+function autoRow(d) {
+  const o = (d.options || []).find(x => x.key === d.answer.choice), k = "ra:" + d.id;
+  return `<div class="nrow"><div class="nsum"><span class="tag green">auto</span><span class="mono dim">${esc(d.id)}</span>
+    ${d.epic ? `<span class="tag">${esc(d.epic)}</span>` : ""}<span class="ttl">${esc(d.title)}</span>
+    <span class="dim">chose (${esc(d.answer.choice)}) ${esc(o ? o.label : "")} · ${esc(d.pane || "no pane")} · ${ago(d.answer.at)} ago</span></div>
+    ${d.pane ? `<textarea data-draft="${esc(k)}" placeholder="Disagree? Tell the lead">${esc(drafts[k] || "")}</textarea>
+      <div class="actions"><button class="go" data-reply="${esc(d.pane)}" data-draftkey="${esc(k)}" data-stid="ra-${esc(d.id)}">Send</button><span class="status" id="st-ra-${esc(d.id)}"></span></div>` : ""}</div>`;
+}
+
 function decisionRow(d) {
   const ans = d.answer, rec = (d.options || []).find(o => o.key === d.recommend);
   const opts = (d.options || []).map(o => `<button class="opt ${picks[d.id] === o.key ? "sel" : ""}" data-pick="${esc(d.id)}" data-key="${esc(o.key)}" ${ans ? "disabled" : ""}>
@@ -369,6 +378,13 @@ function interruptRow(i) {
     ${i.epic ? `<span class="tag">${esc(i.epic)}</span>` : ""}<span class="ttl">${esc(i.title)}</span>${i.count > 1 ? `<span class="dim">x${esc(i.count)}</span>` : ""}<span class="dim">${ago(i.created)} ago</span>
     <span class="rb">${safeUrl(i.url) ? `<a href="${esc(safeUrl(i.url))}" target="_blank">Open source</a>` : ""}<button class="go" data-ack="${esc(i.id)}">Ack</button><span class="status" id="st-ack-${esc(i.id)}"></span></span></div>
     ${i.reason ? `<div class="sub">${esc(i.reason)}</div>` : ""}</div>`;
+}
+
+function requestRow(r) {
+  const flags = ["stale", "overdue"].filter(f => r[f]).map(f => `<span class="tag red">${f}</span>`).join("");
+  return `<div class="nrow"><div class="nsum"><span class="tag amber">${esc(r.priority)}</span><span class="mono dim">${esc(r.id)}</span><span class="tag">${esc(r.status)}</span>
+    <span class="ttl">${esc(r.who)}: ${esc(r.title)}</span>${flags}${r.owner ? `<span class="dim">owner ${esc(r.owner)}</span>` : ""}${r.due ? `<span class="dim">due ${esc(r.due)}</span>` : ""}
+    ${safeUrl(r.link) ? `<span class="rb"><a href="${esc(safeUrl(r.link))}" target="_blank">Open source</a></span>` : ""}</div></div>`;
 }
 
 function clearedRow(c) {
@@ -529,13 +545,16 @@ function render(b) {
   const nitems = (b.needs || []).filter(x => byKey[x.key]);
   const n = nitems.length, needs = nitems.map(x => byKey[x.key]());
   const cleared = b.cleared || [];
-  const answered = decs.filter(d => d.status === "answered");
+  const autos = decs.filter(d => d.status === "answered" && d.answer && d.answer.by === "auto");
+  const answered = decs.filter(d => d.status === "answered" && !autos.includes(d));
   setFavicon(n > 0);
   const html = `<h2>Needs you <span class="n">${n}</span></h2>` + (needs.join("") || `<div class="green">Nothing waiting on you.</div>`)
     + (cleared.length ? `<details ${dk("cleared")}><summary>${cleared.length} cleared without you</summary>${cleared.map(clearedRow).join("")}</details>` : "")
     + (sleeping.length ? `<details ${dk("snoozed")}><summary>${sleeping.length} snoozed</summary>${sleeping.map(([k, h]) =>
         `<div class="actions"><span class="amber">snoozed until ${untilS(snz[k])}</span><button class="ghost" data-snooze="${esc(k)}" data-for="off">Unsnooze</button></div>${h}`).join("")}</details>` : "")
+    + ((b.requests || []).length ? `<details ${dk("requests", true)}><summary>Requests <span class="n">${b.requests.length}</span></summary>${b.requests.map(requestRow).join("")}</details>` : "")
     + (bg.length ? `<div class="dim" style="font-size:13px;margin-top:8px">Waiting on their own background agents: ${bg.map(a => esc(a.pane)).join(", ")}.</div>` : "")
+    + (autos.length ? `<details ${dk("autoapplied")}><summary>Auto-applied (24h) <span class="n">${autos.length}</span></summary>${autos.map(autoRow).join("")}</details>` : "")
     + (answered.length ? `<details ${dk("answered")}><summary>${answered.length} answered in the last 24h</summary>${answered.map(decisionRow).join("")}</details>` : "");
   patch(document.getElementById("needs"), html, el => el.querySelectorAll(".screen").forEach(x => { x.scrollTop = x.scrollHeight; }));
 
@@ -564,7 +583,8 @@ function render(b) {
   const pe = document.getElementById("parked");
   patch(pe, parkedHtml); pe.hidden = !parked.length;
 
-  const live = b.epics.filter(e => !e.paused), held = b.epics.filter(e => e.paused);
+  const planned = b.epics.filter(e => !e.paused && (e.stage === "planning" || e.stage === "ready"));
+  const live = b.epics.filter(e => !e.paused && !planned.includes(e)), held = b.epics.filter(e => e.paused && !planned.includes(e));
   const nowS = Date.now() / 1000, openAsks = decs.filter(d => d.status === "open");
   const items = live.map(e => {
     const t = tally(e.counts), asks = openAsks.filter(d => d.epic === e.epic);
@@ -582,6 +602,8 @@ function render(b) {
   const epicsHtml = `<h2>Epics <span class="n">${live.length}</span> <span class="dim" style="text-transform:none;letter-spacing:0">· ${nActive} active · click a row for segments, tabs and actions</span></h2>
     <div class="tblbox"><table><tr><th>Epic</th><th>Lead</th><th style="width:38%">Progress</th><th>Open asks</th><th>Last touched</th></tr>${rows}</table></div>
     ${live.length ? "" : '<div class="dim">no active epics</div>'}
+    ${planned.length ? `<details ${dk("planning", true)}><summary>${planned.length} in planning</summary><ul>${planned.map(e =>
+      `<li><span class="epic">${esc(e.epic)}</span> <span class="dim">${esc(e.repo)} · ${e.stage === "ready" ? "approved, waiting for its lead" : "being planned with you"}</span></li>`).join("")}</ul></details>` : ""}
     ${held.length ? `<details ${dk("held", true)}><summary>${held.length} on hold</summary><ul>${held.map(e =>
       `<li><span class="epic">${esc(e.epic)}</span> <span class="dim">${esc(e.repo)} · paused ${ago(e.paused.paused_at)} ago${e.paused.reason ? " — " + esc(e.paused.reason) : ""}</span>
        <button class="go" data-resume="${esc(e.epic)}">Resume</button><span class="status" id="st-p-${esc(e.epic)}"></span></li>`).join("")}</ul></details>` : ""}
@@ -598,7 +620,7 @@ function render(b) {
   const pinEl = document.getElementById("pins");
   if (pinEl.dataset.html !== pinHtml) { pinEl.innerHTML = pinHtml; pinEl.dataset.html = pinHtml; }
   const tabsEl = document.getElementById("tabs");
-  if (b.agents === null) { patch(tabsEl, `<h2>Tabs</h2><div class="dim">herdr not available</div>`); return; }
+  if (b.agents === null) { patch(tabsEl, `<h2>Tabs</h2><div class="dim">terminal backend not available</div>`); return; }
   const epicNames = b.epics.map(e => e.epic);
   const order = { blocked: 0, done: 1, working: 2, unknown: 3, idle: 4 };
   const isPinned = a => pins.includes(pinKey(a));
@@ -727,17 +749,19 @@ document.addEventListener("click", async e => {
       if (r.error) throw new Error(r.error);
       st(pane).textContent = "sent; the conductor will reply in its tab"; tick();
     } else if (ds.reply) {
-      const pane = ds.reply, dk = ds.draftkey || "r:" + pane, text = drafts[dk] || "";
+      const pane = ds.reply, sid = ds.stid || pane, dk = ds.draftkey || "r:" + pane, text = drafts[dk] || "";
       if (!text.trim()) return;
-      t.disabled = true; st(pane).textContent = "sending…";
+      t.disabled = true; st(sid).textContent = "sending…";
       const r = await post("/api/reply", { pane, text });
       if (r.error) throw new Error(r.error);
-      delete drafts[dk]; st(pane).textContent = "sent"; tick();
+      if (drafts[dk] === text) delete drafts[dk];
+      const box = document.querySelector(`[data-draft="${CSS.escape(dk)}"]`); if (box && box.value === text) box.value = "";
+      t.disabled = false; st(sid).textContent = "sent"; tick();
     } else if (ds.focus) {
       const r = await post("/api/focus", { pane: ds.focus }); if (r.error) throw new Error(r.error);
     }
   } catch (err) {
-    t.disabled = false; const id = ds.answer || ds.reply || ds.pane; if (id && st(id)) st(id).textContent = err.message; else alert(err.message);
+    t.disabled = false; const id = ds.answer || ds.stid || ds.reply || ds.pane; if (id && st(id)) st(id).textContent = err.message; else alert(err.message);
   }
 });
 

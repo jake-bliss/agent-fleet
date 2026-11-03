@@ -17,6 +17,7 @@
 #   review-receipt codex  pass --report ~/.cache/codex-review/<run>.md
 #   review-receipt claude pass "tenant scope miss; fixed" --report <verdict.json> --found 2 --unique 1 --sev high
 #   review-receipt claude pass --report <opus-fail.json> --fixed-by <codex-delta>.md
+#   review-receipt claude skip "low tier"   (refused unless review-tier says low for this diff)
 #   review-receipt codex  fail "missing tenant scope in Foo#bar"
 #   review-receipt --write-report <claude|codex> [--sha S] [--since S] [--tool T] [--out F] [file|-]
 #   review-receipt --show
@@ -48,6 +49,7 @@ for line in open(path) if __import__("os").path.exists(path) else []:
     except ValueError: continue
     if e.get("at", 0) < cut: continue
     c = agg[e["who"]]
+    if e.get("verdict") == "skip": c["skips"] += 1; continue
     c["verdicts"] += 1
     if e.get("unverified"): c["unverified"] += 1
     if e.get("found") is None: c["untagged"] += 1; continue
@@ -57,7 +59,7 @@ print(f"review ledger, last {days:g} days")
 for who, c in sorted(agg.items()):
     print(f"  {who:6s} verdicts={c['verdicts']} tagged={c['tagged']} found={c['found']} unique={c['unique']} "
           f"(reviews w/ unique high={c['unique_high']} med={c['unique_med']} low={c['unique_low']}) "
-          f"untagged={c['untagged']} unverified={c['unverified']}")
+          f"untagged={c['untagged']} unverified={c['unverified']} skips={c['skips']}")
 PY
 fi
 
@@ -142,7 +144,7 @@ PY
   exit $?
 fi
 
-USAGE='usage: review-receipt <claude|codex> <pass|fail> ["notes"] [--report F] [--fixed-by F] [--found N --unique N --sev S]'
+USAGE='usage: review-receipt <claude|codex> <pass|fail|skip> ["notes"] [--report F] [--fixed-by F] [--found N --unique N --sev S]'
 WHO="${1:?$USAGE}"
 VERDICT="${2:?$USAGE}"
 shift 2
@@ -163,7 +165,19 @@ case "$SEV" in ""|high|med|low|none) ;; *) echo "--sev must be high|med|low|none
 for n in "$FOUND" "$UNIQUE"; do case "$n" in ""|*[!0-9]*) [ -z "$n" ] || { echo "--found/--unique take integers" >&2; exit 2; } ;; esac; done
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 case "$WHO" in claude|codex) ;; *) echo "reviewer must be claude or codex" >&2; exit 2 ;; esac
-case "$VERDICT" in pass|fail) ;; *) echo "verdict must be pass or fail" >&2; exit 2 ;; esac
+case "$VERDICT" in pass|fail|skip) ;; *) echo "verdict must be pass, fail or skip" >&2; exit 2 ;; esac
+if [ "$VERDICT" = skip ]; then
+  [ "$WHO" = claude ] || { echo "only claude can be skipped" >&2; exit 2; }
+  [ -n "$NOTES" ] || { echo "skip needs a reason: review-receipt claude skip \"<why>\"" >&2; exit 2; }
+  TIER_BIN="${REVIEW_TIER:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/review-tier}"
+  [ -x "$TIER_BIN" ] || TIER_BIN="$(command -v review-tier || true)"
+  [ -n "$TIER_BIN" ] || { echo "review-receipt: review-tier not found; cannot tier" >&2; exit 2; }
+  TIER_MB=$(git merge-base "$BASE" HEAD 2>/dev/null) || { echo "review-receipt: no merge base with $BASE; cannot tier" >&2; exit 2; }
+  TIER_OUT=$("$TIER_BIN" "$TIER_MB..HEAD") || exit 2
+  if [ "$(head -1 <<<"$TIER_OUT")" != low ]; then
+    echo "review-receipt: REFUSED claude skip: high tier ($(tail -1 <<<"$TIER_OUT")). Run the Opus review." >&2; exit 3
+  fi
+fi
 [ -z "$FIXED_BY" ] || [ "$WHO" = claude ] || { echo "--fixed-by only applies to claude" >&2; exit 2; }
 [ -z "$FIXED_BY" ] || [ -n "$REPORT" ] || { echo "--fixed-by needs --report <the Opus verdict file>" >&2; exit 2; }
 
@@ -218,7 +232,9 @@ def matches_head(d):
     return None
 
 record_sha, via, unverified, report_path, record_pid = sha, None, False, None, patch_id
-if verdict == "pass":
+if verdict == "skip":
+    pass
+elif verdict == "pass":
     if not report:
         if enforce == "1":
             refuse("no --report. A pass must come from a review's verdict file.",

@@ -4,20 +4,25 @@
 Usage:
   adw-ask new --title T [--epic E] [--body-file F | --body TEXT | --body -]
               [--option KEY=LABEL]... [--recommend KEY]        prints the decision id
-              [--default-after 4h]   reversible decisions only: apply --recommend if unanswered by then
+              --class merge|prod-write|money|auth|customer-data|scope|irreversible|reversible|design|split|redesign|fix-streak|size|sequencing
+              [--default-after 4h]   non-gated decisions with no gated wording: apply --recommend if unanswered by then
+              A non-gated ask with --recommend and no gated wording is answered at once (by "auto").
   adw-ask list [--all] [--json]
   adw-ask show <id>
   adw-ask wait <id> [--timeout SECONDS]                       blocks until answered; prints the answer JSON
-  adw-ask answer <id> <choice> [--note TEXT]
+  adw-ask answer <id> <choice> [--note TEXT] [--relay "<the human's words>" | --by mate]
   adw-ask withdraw <id>
 """
 import argparse
 import contextlib
 import fcntl
+import hashlib
+import importlib.util
 import json
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import sys
 import time
@@ -25,6 +30,9 @@ from pathlib import Path
 
 ADW_HOME = Path(os.environ.get("ADW_HOME") or Path.home() / ".claude/adw")
 ASKS = ADW_HOME / "asks"
+_spec = importlib.util.spec_from_file_location("adw_mux", Path(__file__).resolve().parent / "mux.py")
+mux = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(mux)
 
 
 def now():
@@ -96,7 +104,8 @@ def live_remotes():
 
 
 def pane_ref(pane):
-    return f"{MACHINE}/{pane}" if MACHINE and pane and "/" not in pane else pane
+    m = mux.machine() if mux.is_hc(pane) else MACHINE
+    return f"{m}/{pane}" if m and pane and "/" not in pane else pane
 
 
 def herdr_cmd(args, machine=None):
@@ -122,6 +131,8 @@ def herdr(*args, machine=None):
 
 
 def agent_info(pane):
+    if mux.is_hc(pane):
+        return mux.get(pane)
     out, _ = herdr("agent", "get", pane)
     if not out:
         return None
@@ -131,14 +142,95 @@ def agent_info(pane):
             "session": (a.get("agent_session") or {}).get("value")}
 
 
+def prompt(pane, text):
+    return mux.prompt(pane, text) if mux.is_hc(pane) else herdr("agent", "prompt", pane, text)
+
+
+def read_pane(pane, lines=200):
+    if mux.is_hc(pane):
+        return mux.read(pane, lines)
+    return herdr("agent", "read", pane, "--source", "recent-unwrapped", "--lines", str(lines))
+
+
+def send_keys(pane, keys):
+    return mux.keys(pane, keys) if mux.is_hc(pane) else herdr("pane", "send-keys", pane, *keys)
+
+
+def focus(pane):
+    return mux.focus(pane) if mux.is_hc(pane) else herdr("agent", "focus", pane)
+
+
+def own_pane():
+    return mux.own_pane() or os.environ.get("HERDR_PANE_ID")
+
+
+def list_agents():
+    """Agents of every available backend in the herdr `agent list` shape, or None when neither backend answers."""
+    agents, ok = [], False
+    if shutil.which("herdr"):
+        for machine in [None, *live_remotes()]:
+            out, _ = herdr("agent", "list", machine=machine)
+            if out is None:
+                continue
+            ok = True
+            for a in json.loads(out)["result"]["agents"]:
+                agents.append({**a, "pane_id": f"{machine}/{a['pane_id']}", "machine": machine} if machine else a)
+    if mux.available():
+        hc_agents = mux.list_agents()
+        if hc_agents is not None:
+            ok = True
+            agents += hc_agents
+    return agents if ok else None
+
+
+GATED = ("merge", "prod-write", "money", "auth", "customer-data", "scope", "irreversible")
+NON_GATED = ("reversible", "design", "split", "redesign", "fix-streak", "size", "sequencing")
+PR_SHAPE_CLASSES = ("size", "split")
+GATE_SCAN = re.compile(r"ship \S+#\d+|\bship\b|pr-ship|\bland\b|squash|publish|release|\bdrop\b|merge|\bmerg|prod|deploy|delete|drop |refund|price|pricing|charge|credential|secret|token|migrat|rollback", re.I)
+GATE_SCAN_NO_PR_SHAPE = re.compile(r"publish|release|\bdrop\b|prod|deploy|delete|drop |refund|price|pricing|charge|credential|secret|token|migrat|rollback", re.I)
+SHIP_TOKEN = re.compile(r"ship \S+#\d+@[0-9a-f]+", re.I)
+
+
+def gate_hit(d):
+    texts = [d.get("title"), d.get("body"), d.get("relay"), (d.get("answer") or {}).get("relay"),
+             *(t for o in d.get("options") or [] for t in (o.get("key"), o.get("label")))]
+    relaxed = d.get("class") in PR_SHAPE_CLASSES
+    for t in texts:
+        m = (SHIP_TOKEN.search(t or "") or GATE_SCAN_NO_PR_SHAPE.search(t or "")) if relaxed else GATE_SCAN.search(t or "")
+        if m:
+            return m.group(0)
+    return None
+
+
+def gate_reason(d):
+    """Why this ask may not be answered without the human, or None. Re-run at use time for every auto/default answer."""
+    if d.get("class") in GATED:
+        return f"class {d['class']} is gated"
+    hit = gate_hit(d)
+    return f"text mentions {hit.strip()!r}" if hit else None
+
+
+def answer_who(a):
+    by = a.get("by") or "human"
+    if by == "default":
+        return "No answer in time; the recommended default was applied", "Note"
+    if by == "auto":
+        return "Auto-applied the recommended option (reversible, not gated)", "Note"
+    if by == "human":
+        return "the human chose", "Note from the human"
+    if by == "relay:human":
+        return "the human chose (relayed by the first mate)", "Note from the human"
+    return f"{by} chose", "Note"
+
+
 def answer_message(d):
     a = d["answer"]
     label = next((o["label"] for o in d["options"] if o["key"] == a["choice"]), None)
     choice = f"({a['choice']}) {label}" if label else a["choice"]
-    who = "No answer in time; the recommended default was applied" if a.get("by") == "default" else "the human chose"
+    who, note_label = answer_who(a)
     msg = f"[adw-ask {d['id']} answered] {d['title']} -> {who}: {choice}"
     if a.get("note"):
-        msg += f". Note from the human: {a['note']}"
+        msg += f". {note_label}: {a['note']}"
     return msg + f". Full record: adw-ask show {d['id']}"
 
 
@@ -151,7 +243,7 @@ def marker(d):
 
 
 def seen_by_agent(d):
-    out, _ = herdr("agent", "read", d["pane"], "--source", "recent-unwrapped", "--lines", "200")
+    out, _ = read_pane(d["pane"])
     if out and marker(d) in out:
         return True
     if d.get("session"):
@@ -185,6 +277,10 @@ def merge_delivery(d):
 def deliver(d):
     if d["status"] != "answered" or d.get("delivered") or d.get("undeliverable") or not d.get("pane"):
         return d
+    if d["answer"].get("by") == f"agent:{d['pane']}":
+        d["delivered"] = now()
+        d.pop("delivery_error", None)
+        return merge_delivery(d)
     if d.get("attempts") and seen_by_agent(d):
         d["delivered"] = now()
         d.pop("delivery_error", None)
@@ -212,9 +308,9 @@ def deliver(d):
             cur["last_attempt"] = now()
             save(cur)
             d = cur
-        _, err = herdr("agent", "prompt", d["pane"], answer_message(d))
+        _, err = prompt(d["pane"], answer_message(d))
         if err:
-            d["delivery_error"] = f"herdr prompt failed: {err}; will retry"
+            d["delivery_error"] = f"prompt failed: {err}; will retry"
         else:
             for _ in range(6):
                 time.sleep(1)
@@ -225,6 +321,25 @@ def deliver(d):
             else:
                 d["delivery_error"] = "sent; waiting to see it in the agent's tab"
     return merge_delivery(d)
+
+
+def migrate_pane(old, new, session):
+    """Moves open decisions and answered ones never delivered from pane old to new, for this session only."""
+    moved = 0
+    with locked():
+        for d in all_asks():
+            if d.get("pane") != old or d.get("session") != session:
+                continue
+            undelivered = d["status"] == "answered" and not d.get("delivered")
+            if d["status"] != "open" and not undelivered:
+                continue
+            d["pane"] = new
+            if undelivered:
+                for k in DELIVERY_FIELDS:
+                    d.pop(k, None)
+            save(d)
+            moved += 1
+    return moved
 
 
 def retry_deliveries():
@@ -242,7 +357,7 @@ def apply_defaults():
                 pass
 
 
-def record_answer(i, choice, note="", by="human"):
+def record_answer(i, choice, note="", by="human", relay=None):
     choice = (choice or "").strip()
     if not choice and not note.strip():
         raise ValueError("pick an option or write a note")
@@ -252,10 +367,25 @@ def record_answer(i, choice, note="", by="human"):
             raise ValueError(f"{i} is {d['status']}")
         if by == "default" and not (d.get("default_at") and d["default_at"] <= now()):
             raise ValueError(f"{i} default not due")
+        if by in ("auto", "default") and (why := gate_reason(d)):
+            if by == "default" and d.get("default_blocked") != why:
+                d["default_blocked"] = why
+                save(d)
+            raise ValueError(f"{i} {by} answer blocked: {why}")
         d["status"] = "answered"
         d["answer"] = {"choice": choice or "note", "note": note.strip(), "at": now(), "by": by}
+        if relay:
+            d["answer"]["relay"] = relay.strip()
         save(d)
     return deliver(d)
+
+
+def body_hash(body):
+    return hashlib.sha1((body or "").encode()).hexdigest()
+
+
+def default_by(pane):
+    return "agent:" + (pane_ref(pane) if pane else "cli")
 
 
 def cmd_new(a):
@@ -273,25 +403,53 @@ def cmd_new(a):
         options.append({"key": k.strip(), "label": label.strip()})
     if a.recommend and a.recommend not in {o["key"] for o in options}:
         raise SystemExit(f"--recommend {a.recommend!r} is not an option key")
-    default_at = None
+    cls = a.cls
+    if not cls:
+        raise SystemExit(f"--class is required; gated (the human decides): {', '.join(GATED)}; non-gated (auto-applied with --recommend): {', '.join(NON_GATED)}")
+    if cls not in GATED + NON_GATED:
+        raise SystemExit(f"unknown --class {a.cls!r}; one of: {', '.join(GATED + NON_GATED)}")
+    pane = own_pane()
+    d = {"id": "d-" + secrets.token_hex(3), "created": now(), "status": "open",
+         "title": a.title, "epic": a.epic, "body": body, "options": options, "class": cls,
+         "recommend": a.recommend, "pane": pane_ref(pane), "session": None,
+         "cwd": os.getcwd(), "default_at": None}
+    why = gate_reason(d)
+    if why:
+        d["gated_reason"] = why
     if a.default_after:
         m = re.fullmatch(r"(\d+)([mh])", a.default_after)
         if not m or not a.recommend:
             raise SystemExit("--default-after wants e.g. 90m or 4h, and needs --recommend")
+        if why:
+            raise SystemExit(f"--default-after refused: {why}; the human must decide this one")
         secs = int(m.group(1)) * (60 if m.group(2) == "m" else 3600)
         if secs < 1800:
-            raise SystemExit("--default-after must allow at least 30m")
-        default_at = now() + secs
-    pane = os.environ.get("HERDR_PANE_ID")
+            raise SystemExit("--default-after must give the human at least 30m")
+        d["default_at"] = now() + secs
     info = agent_info(pane) if pane else None
-    d = {"id": "d-" + secrets.token_hex(3), "created": now(), "status": "open",
-         "title": a.title, "epic": a.epic, "body": body, "options": options,
-         "recommend": a.recommend, "pane": pane_ref(pane), "session": info and info["session"],
-         "cwd": os.getcwd(), "default_at": default_at}
-    save(d)
+    session = info and info["session"]
+
+    def sig(o, session):
+        return (o.get("epic"), o.get("pane"), session, o.get("class"), o.get("recommend"), o["title"],
+                [(x["key"], x["label"]) for x in o["options"]], body_hash(o["body"]))
+
+    with locked():
+        dup = next((o for o in all_asks() if o["status"] == "open" and sig(o, o.get("session")) == sig(d, session)), None)
+        if dup:
+            print(dup["id"])
+            return
+        d["session"] = session
+        save(d)
     print(d["id"])
     if not pane:
-        print("warning: not in a herdr pane; the answer can only be read with `adw-ask wait`", file=sys.stderr)
+        print("warning: not in a terminal pane; the answer can only be read with `adw-ask wait`", file=sys.stderr)
+    if cls in NON_GATED and a.recommend and not why:
+        try:
+            record_answer(d["id"], a.recommend, "", by="auto")
+        except ValueError as e:
+            print("already answered" if "is answered" in str(e) else str(e), file=sys.stderr)
+            return
+        print(f"auto-applied {a.recommend}", file=sys.stderr)
 
 
 def cmd_list(a):
@@ -320,8 +478,11 @@ def cmd_wait(a):
 
 
 def cmd_answer(a):
+    if a.relay and a.by:
+        raise SystemExit("--relay and --by are exclusive")
+    by = "relay:human" if a.relay else a.by or default_by(own_pane())
     try:
-        d = record_answer(a.id, a.choice, a.note or "")
+        d = record_answer(a.id, a.choice, a.note or "", by=by, relay=a.relay)
     except ValueError as e:
         raise SystemExit(str(e))
     print("delivered" if d.get("delivered") else d.get("delivery_error", "recorded"))
@@ -346,6 +507,7 @@ def main():
     n.add_argument("--option", action="append")
     n.add_argument("--recommend")
     n.add_argument("--default-after")
+    n.add_argument("--class", dest="cls")
     ls = sp.add_parser("list")
     ls.add_argument("--all", action="store_true")
     ls.add_argument("--json", action="store_true")
@@ -358,6 +520,8 @@ def main():
     an.add_argument("id")
     an.add_argument("choice")
     an.add_argument("--note")
+    an.add_argument("--relay")
+    an.add_argument("--by", choices=("mate",))
     a = ap.parse_args()
     {"new": cmd_new, "list": cmd_list, "show": cmd_show, "wait": cmd_wait,
      "answer": cmd_answer, "withdraw": cmd_withdraw}[a.cmd](a)

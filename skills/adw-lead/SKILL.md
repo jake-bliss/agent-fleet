@@ -45,7 +45,7 @@ The user → **first mate** → **you, the epic lead** → crew (segment subagen
 epic). The first mate talks to you, not your crew, about this epic; you own what happens inside it.
 - **Register** at the start of every invocation (and after a restart or `/clear`): `adw-status lead <epic>`.
 - **`[first mate]` messages**: a relay ("the user says: …") carries the user's authority — act as if
-  they typed it. A crew report is yours: `herdr agent read` that tab, then nudge it, take its work
+  they typed it. A crew report is yours: `herdr agent read` (`adw-mux read <terminal>` for an hc terminal) that tab, then nudge it, take its work
   back, or file an `adw-ask` if only the user can unstick it. Reply in one line with what you did.
 - Decisions go straight to the user via `adw-ask`, never through the first mate.
 - A segment returned **incomplete** (size cap) is not pushed; splitting the remainder is a Greplan —
@@ -74,8 +74,11 @@ or work committed in its worktree), stop waiting on CI or the review bot, write 
 stands in `STATUS.md`, then `adw-status waiting "epic paused" --for 7d` and end the turn. Merges the
 user already authorized may still land. Only the user pauses or resumes (`adw-lead-state pause|resume`,
 or the board buttons); on resume, reconcile and continue.
-1. **Frame** (new only) — `adw-lead-state init <epic> <repo-key> "<goal>"`; fill `plan.md` success
-   criteria + scope fences; confirm the restated goal in one line before scouting.
+1. **Frame** (new only) — `READY.json` in the epic dir means `/plan-epic` framed it with the user: skip Frame, read
+   `plan.md` (criteria, fences, prerequisites, risks, the forecast shape) and `decisions.md`, and scout from there.
+   `PLANNING.json` without `READY.json` (`adw-status lead` refuses it): planning isn't finished; tell the first mate
+   and stop. Otherwise `adw-lead-state init <epic> <repo-key> "<goal>"`; fill `plan.md` success criteria + scope
+   fences; confirm the restated goal in one line before scouting.
 2. **Scout** — parallel Explore/general-purpose readers over the affected code → landscape: seams,
    risky couplings, what exists.
 3. **Decompose → G2.** Per segment: id, an `/adw`-ready brief in `epics/<epic>/briefs/` (guardrails,
@@ -110,7 +113,7 @@ or the board buttons); on resume, reconcile and continue.
    yourself.
 
 ## State — `$ADW_HOME/epics/<epic>/`
-`plan.md` (goal, criteria, fences) · `graph.json` (the DAG, source of truth) · `briefs/` ·
+`plan.md` (goal, criteria, fences) · `PLANNING.json`/`READY.json` (planned by `/plan-epic`; READY = the user approved the plan) · `graph.json` (the DAG, source of truth) · `briefs/` ·
 `decisions.md` (every gate decision: what, choice, why, date, ask id).
 Status: `pending → ready → building → pr-open → merged` (`blocked` on failure/closed). Keep
 `graph.json` true between invocations: `adw-lead-state reconcile` after every merge; when a decision

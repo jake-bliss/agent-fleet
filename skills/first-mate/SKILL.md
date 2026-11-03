@@ -20,12 +20,15 @@ crew. Watch lines and `adw-board show` tag tabs `[lead of X]`, `[crew of X; lead
 
 ## Relay — on the user's word, immediately, no re-confirmation
 Their instruction IS the authorization. Do it, then read the tab back to confirm it landed:
-- message a tab: `herdr agent prompt <pane> "[first mate] the user says: <text>"` (their words, or the
+- Terminal ids: `t7` (this machine) or `<machine>/t7` are herdr app (`hc`) terminals; use `adw-mux` for them
+  (`adw-mux send|read|get|keys|focus`) where this list says `herdr`. Pane ids like `w1:p2` are the herdr CLI's.
+- message a tab: `herdr agent prompt <pane> "[first mate] the user says: <text>"` (`adw-mux send <terminal> "..."` for hc) (their words, or the
   note they asked you to draft — once they say send, send). About an epic, that tab is its lead;
 - a dialog: `herdr agent read` it first, then `herdr pane send-keys <pane> <keys>` for the option they
   chose (number keys / arrows + enter; "other / type something": select it, then type);
-- a decision they answer here: `adw-ask answer <id> <choice> --note "<their note>"`;
+- a decision they answer here: `adw-ask answer <id> <choice> --relay "<their words>"` (`--note` for a note they add);
 - a new agent: the board's Launch section, or `herdr tab create` + `herdr agent start <name> --kind claude --pane <id> -- <launch args>` (include `--settings $ADW_HOME/spawned-settings.json` for the auto-compact window);
+- a relay to a lead or tab goes by `adw-mux send` (or `herdr agent prompt`), never `adw-ask new`;
 - "mark <epic> complete": write `$ADW_HOME/epics/<epic>/COMPLETE.json` =
   `{"completed_at": <unix ts>, "by": "first-mate on the user's word"}` — only that exact slug.
 Say in one line what you sent where. If the tab's state changed so it no longer fits (dialog closed,
@@ -48,6 +51,31 @@ different agent in the pane), don't improvise — tell the user.
      and reconciles.
   Only on that event, once per event; never if the tab is working or the line lacks `[refreshable]`.
 - Log every nudge / refresh in `notes.md` as `nudge` / `refresh`.
+
+## Requests: the owner's queue (`req`)
+Ad-hoc asks from coworkers and clients live in one queue, `req` (`req --help`). Nothing someone asked the owner
+for may live only in a tab or a chat line.
+- **Intake:** the owner says "X asked for Y", or an interrupt is a real request for their work (not a question you
+  can answer, not FYI) -> `req add "<what, in your words>" --who <person> [--client C] -p P0-P3 [--due] --link <url>`
+  (`--link` is a URL the owner can click to see the ask) before you ack the interrupt, and put the `r-<n>` in the ack
+  note. Priority: P0 = a client is down or money is wrong now; P1 = this week, someone blocked; P2 = default;
+  P3 = whenever. Unsure: P2, and say so in chat.
+- **Owner of the work:** when a tab takes it on, `req set <id> --owner <terminal|epic>` and `req doing <id>`.
+  Tabs you start for a request get the id in their task text and run `req done <id> "<what>"` when finished.
+- **Close the loop:** `done` is not closed. Once the asker has heard back (the owner replied, or you drafted the
+  reply and they sent it), `req told <id>`. A `done` item: one chat line to the owner with a draft reply.
+- **`request` watch lines** (stale or overdue): `adw-board show <owner>` if it has one; one chat line to the
+  owner: what, who asked, where it stands, the next step. Waiting on the asker: `req wait <id> "<on what>"`.
+- The owner asks what is on their plate: `req ls`, never from memory.
+
+## Planning (`/plan-epic`)
+Epics are planned with the owner in the terminal they are already in (`/plan-epic <idea>`), never in a separate
+planner tab. The planner hands off with `adw-lead-state handoff`, which writes `READY.json`.
+- When a request or interrupt looks epic-sized (several PRs, ordering, more than one repo), suggest `/plan-epic`
+  in one line; never start planning on your own. One-PR work goes straight to `/adw`.
+- **`plan-ready epic <slug>`** watch line: start its lead (`/adw-lead <slug>` in a new tab). Mention what else is
+  active in one line. It skips Frame and brings its cut as a G2 ask.
+- Planning tabs are the owner's working tabs: no check-ins or refreshes. A `planning` epic is not stalled work.
 
 ## Holds
 The user keeps the number of live epics within usage limits; there is no cap. `adw-lead-state fleet -`
@@ -102,10 +130,19 @@ the snooze ends — don't chase them.
      turn. Never sit without one. Exit without events or non-zero → `watch-error` handling.
 4. Log each wake in `notes.md`: time, event, useful/noise (honest guess).
 
+## Triage in a child
+Your context is re-read on every call, so reading lands in a child, not here. For each `needs-you interrupt`,
+`trouble` or `request` line that needs reading (a chat thread, a ticket, a tab's screen), run the `mate-triage`
+agent with the item's id and line, all items of one prompt in parallel in one message. It reads and returns one
+line: `<id> | <verdict> | <evidence> | <action>`. You decide and act: run the action as given when you agree.
+Only an `unsure` or `owner` verdict, a relay, or a dialog is yours to read with `adw-board show`. A
+`needs-you decision|dialog` line needs no reading; never send it to a child. Log `child` in the `notes.md` wake
+line. `mate-cost` prints the mate's daily context and cost, split into the mate and its children.
+
 ## What's waiting on the user: the board is the list
 Before telling the user what needs them (digest, status answer, "nothing waiting"), run `adw-board needs`
 and report that list, never from memory. Something you think needs them that isn't on it (a push only
-their terminal can do, a choice in chat) → `adw-ask new` so it is on the board, then name the id.
+their terminal can do, a choice in chat) → `adw-ask new --class <class>` (classes: `docs/board.md`) so it is on the board, then name the id.
 Rebuild `digest.md` whenever you give the user that list, not only at `digest-due`.
 
 ## Digest (`digest.md`, shown on the board)

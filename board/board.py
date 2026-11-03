@@ -92,7 +92,7 @@ def set_snooze(key, until):
 
 
 PINS = ADW_HOME / "board-pins.json"
-PIN_KEY = re.compile(r"(s:[A-Za-z0-9_-]{1,64}|p:(?:\w+/)?w\w+:p\w+)")
+PIN_KEY = None
 
 
 def load_pins():
@@ -138,6 +138,15 @@ _spec.loader.exec_module(asks)
 _spec = importlib.util.spec_from_file_location("adw_status", Path(__file__).resolve().parent / "status.py")
 adw_status = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(adw_status)
+PIN_KEY = re.compile(r"(s:[A-Za-z0-9_-]{1,64}|p:(?:(?:\w+/)?w\w+:p\w+|" + asks.mux.PANE_PATTERN + "))")
+_spec = importlib.util.spec_from_file_location("terminals", Path(__file__).resolve().parent / "terminals.py")
+terminals = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(terminals)
+terminals.mux = asks.mux
+LIVE = None
+_spec = importlib.util.spec_from_file_location("reqs", Path(__file__).resolve().parent / "reqs.py")
+reqs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(reqs)
 
 LAUNCH_ARGS = shlex.split(os.environ.get("ADW_LAUNCH_ARGS", "--dangerously-skip-permissions"))
 SPAWNED_SETTINGS = ADW_HOME / "spawned-settings.json"
@@ -238,6 +247,16 @@ def pending_items(path):
     return items
 
 
+def epic_stage(d):
+    """planning (a /plan-epic tab owns it), ready (handed off, no lead yet) or live; no PLANNING.json = live.
+    adw-status refuses a lead registration while planning, so lead.json only appears after the handoff."""
+    if not (d / "PLANNING.json").exists():
+        return "live"
+    if not (d / "READY.json").exists():
+        return "planning"
+    return "live" if (d / "lead.json").exists() else "ready"
+
+
 def load_epic(d):
     try:
         g = json.loads((d / "graph.json").read_text())
@@ -273,6 +292,7 @@ def load_epic(d):
         "completed_at": json.loads(done.read_text()).get("completed_at") if done.exists() else None,
         "repo": g.get("repo"),
         "paused": paused,
+        "stage": epic_stage(d),
         "max_parallel": g.get("max_parallel"),
         "mtime": latest_mtime(d),
         "counts": {k: len(v) for k, v in by.items()},
@@ -315,7 +335,7 @@ def summary(text):
 
 def classify(status, text):
     """working | blocked | background | asks | unsent | finished | idle"""
-    if status in ("working", "blocked"):
+    if status in ("working", "blocked", "unknown"):
         return status
     turn, draft = last_turn(text)
     if BACKGROUND.search(text):
@@ -411,18 +431,28 @@ def last_active(agent, sid):
 
 
 def load_agents(epics):
-    out = herdr("agent", "list")
-    if out is None:
+    raw, ok = [], False
+    out = herdr("agent", "list") if shutil.which("herdr") else None
+    if out is not None:
+        ok = True
+        raw = json.loads(out)["result"]["agents"]
+        for m in asks.live_remotes():
+            rout = herdr("agent", "list", machine=m)
+            for a in json.loads(rout)["result"]["agents"] if rout else []:
+                raw.append({**a, "pane_id": f"{m}/{a['pane_id']}", "machine": m})
+    if asks.mux.available():
+        hc_agents = terminals.agents(LIVE)
+        if hc_agents is None:
+            hc_agents = asks.mux.list_agents()
+        if hc_agents is not None:
+            ok = True
+            raw += hc_agents
+    if not ok:
         return None
-    raw = json.loads(out)["result"]["agents"]
-    for m in asks.live_remotes():
-        rout = herdr("agent", "list", machine=m)
-        for a in json.loads(rout)["result"]["agents"] if rout else []:
-            raw.append({**a, "pane_id": f"{m}/{a['pane_id']}", "machine": m})
     with ThreadPoolExecutor(max_workers=8) as pool:
-        texts = list(pool.map(lambda a: herdr("agent", "read", a["pane_id"], "--source", "recent-unwrapped", "--lines", "60") or "", raw))
+        texts = list(pool.map(lambda a: asks.read_pane(a["pane_id"], 60)[0] or "", raw))
     tab_labels = {}
-    for m in [None, *asks.live_remotes()]:
+    for m in [None, *asks.live_remotes()] if shutil.which("herdr") else []:
         tout = herdr("tab", "list", machine=m)
         for t in json.loads(tout)["result"]["tabs"] if tout else []:
             tab_labels[(m, t["tab_id"])] = t.get("label") or ""
@@ -457,7 +487,9 @@ def load_agents(epics):
             "session": sid,
             "watch": watch_state(a["agent_status"], active, adw_status.last_event(sid)),
             "attention": classify(a["agent_status"], text),
-            "summary": summary(text),
+            "summary": a["status_msg"] if a["agent_status"] == "blocked" and a.get("status_msg") else summary(text),
+            "msg": a.get("status_msg") or "",
+            "changed_at": a.get("changed_at"),
             "last_active": active,
             "unseen": a["agent_status"] == "done",
             "screen": "\n".join(text.rstrip().splitlines()[-25:]),
@@ -505,7 +537,7 @@ def build(args):
         elif e and (args.all or e["mtime"] >= cutoff):
             epics.append(e)
     epics.sort(key=lambda e: -e["mtime"])
-    agents = None if args.no_herdr or not shutil.which("herdr") else load_agents(epics)
+    agents = None if args.no_herdr or not (shutil.which("herdr") or asks.mux.available()) else load_agents(epics)
     held = {e["epic"] for e in epics if e["paused"]}
     for a in agents or []:
         if a.get("epic") in held and a.get("watch") and a["watch"]["state"] in ("stopped-silent", "overdue", "waiting"):
@@ -521,8 +553,13 @@ def build(args):
             "mate": mate_digest(),
             "mate_pane": next((a["pane"] for a in agents or [] if a["kind"] == "claude" and a["session"]
                                and is_mate_session(a["session"])), None)}
+    now = time.time()
+    b["requests"] = [{**r, "stale": reqs.stale(r, now), "overdue": reqs.overdue(r)} for r in reqs.open_items()]
     b["needs"] = needs_you(b)
     return b
+
+
+MATE_INTERRUPT_KINDS = ("ticket.authorize", "efficiency.due")
 
 
 def needs_you(b):
@@ -532,7 +569,7 @@ def needs_you(b):
             out.append({"key": "d:" + d["id"], "kind": "decision", "id": d["id"], "title": d["title"], "age": d.get("created"),
                         "epic": d.get("epic"), "source": "decision"})
     for i in b.get("interrupts") or []:
-        if i["kind"] != "ticket.authorize":
+        if i["kind"] not in MATE_INTERRUPT_KINDS:
             out.append({"key": f"i:{i['id']}", "kind": "interrupt", "id": i["id"], "title": i["title"], "age": i.get("created"),
                         "epic": i.get("epic"), "source": i["source"], "count": i.get("count", 1), "reopened_by": i.get("reopened_by"),
                         "reopened_at": i.get("reopened_at")})
@@ -545,7 +582,7 @@ def needs_you(b):
                     "epic": None, "source": "client_time", "client": r.get("client"), "hours": r.get("hours")})
     for a in b.get("agents") or []:
         if a["attention"] == "blocked" and not snoozed(b, dialog_key(a)):
-            out.append({"key": dialog_key(a), "kind": "dialog", "id": a["pane"], "title": a["title"], "age": a.get("last_active"),
+            out.append({"key": dialog_key(a), "kind": "dialog", "id": a["pane"], "title": a.get("msg") or a["title"], "age": a.get("last_active"),
                         "epic": a.get("epic"), "source": "agent", "pane": a["pane"]})
     return out
 
@@ -571,6 +608,11 @@ def render(b, color, full=False):
             n += 1
     if not n:
         lines.append(f"  {G}nothing{X}")
+    if b.get("requests"):
+        lines.append(f"\n{B}REQUESTS{X} {D}(req ls){X}")
+        for r in b["requests"]:
+            flags = "".join(f" {R}{f.upper()}{X}" for f in ("stale", "overdue") if r.get(f))
+            lines.append(f"  {r['id']:<8} {r['priority']} {r['status']:<8} {plain(r['who'])}: {plain(r['title'])}" + flags)
     trouble = [a for a in agents or [] if a.get("watch") and a["watch"]["state"] in ("overdue", "stopped-silent", "failed")]
     waiting = [a for a in agents or [] if a.get("watch") and a["watch"]["state"] == "waiting"]
     if trouble or waiting:
@@ -697,16 +739,19 @@ def launch(body):
 
 VIEW_KEYS = {"esc", "enter", "up", "down", "left", "right", "tab", "shift+tab", "ctrl+c",
              "1", "2", "3", "4", "5", "y", "n"}
-PANE_ID = re.compile(r"(?:\w+/)?w\w+:p\w+")
+PANE_ID = re.compile(r"(?:\w+/)?w\w+:p\w+|" + asks.mux.PANE_PATTERN)
 
 
 def pane_view(pane, lines):
     if not PANE_ID.fullmatch(pane or ""):
         raise ValueError("bad pane id")
     n = str(max(20, min(lines, 400)))
-    out = herdr("pane", "read", pane, "--source", "recent", "--lines", n, "--format", "ansi")
-    if out is not None and not out.strip():
-        out = herdr("pane", "read", pane, "--source", "visible", "--lines", n, "--format", "ansi")
+    if asks.mux.is_hc(pane):
+        out, _ = asks.mux.read(pane, int(n))
+    else:
+        out = herdr("pane", "read", pane, "--source", "recent", "--lines", n, "--format", "ansi")
+        if out is not None and not out.strip():
+            out = herdr("pane", "read", pane, "--source", "visible", "--lines", n, "--format", "ansi")
     if out is None:
         raise ValueError("cannot read that pane")
     info = asks.agent_info(pane)
@@ -717,6 +762,9 @@ def serve(args):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     import threading
 
+    global LIVE
+    if asks.mux.available():
+        LIVE = terminals.start()
     token = secrets.token_urlsafe(24)
     page = (Path(__file__).resolve().parent / "board_page.html").read_text().replace("__ADW_TOKEN__", token).encode()
     allowed = {f"127.0.0.1:{args.serve}", f"localhost:{args.serve}"}
@@ -844,7 +892,7 @@ def serve(args):
             pane, keys = body.get("pane", ""), body.get("keys") or []
             if not PANE_ID.fullmatch(pane) or not keys or not all(k in VIEW_KEYS for k in keys):
                 raise ValueError("bad pane or key")
-            _, err = asks.herdr("pane", "send-keys", pane, *keys)
+            _, err = asks.send_keys(pane, keys)
             return {"ok": not err, "error": err}
         if route == "/api/launch":
             return launch(body)
@@ -877,7 +925,7 @@ def serve(args):
                 lead = next((a for a in json.loads(cache["body"] or b"{}").get("agents") or []
                              if a.get("epic") == name and a.get("role") == "lead"), None)
                 if lead:
-                    asks.herdr("agent", "prompt", lead["pane"], PAUSE_MSG if body["action"] == "pause" else RESUME_MSG)
+                    asks.prompt(lead["pane"], PAUSE_MSG if body["action"] == "pause" else RESUME_MSG)
                 return {"ok": True, "lead_told": bool(lead)}
             else:
                 raise ValueError("unknown action")
@@ -924,7 +972,7 @@ def serve(args):
         if not PANE_ID.fullmatch(pane):
             raise ValueError("bad pane id")
         if route == "/api/focus":
-            _, err = asks.herdr("agent", "focus", pane)
+            _, err = asks.focus(pane)
             return {"ok": not err, "error": err}
         if route == "/api/reconcile":
             body["text"] = RECONCILE.format(epic=body.get("epic", "?"))
@@ -938,7 +986,7 @@ def serve(args):
                 raise ValueError("no agent in that pane")
             if info["status"] == "blocked":
                 raise ValueError("agent is in a dialog; open the tab to answer it")
-            _, err = asks.herdr("agent", "prompt", pane, text)
+            _, err = asks.prompt(pane, text)
             return {"ok": not err, "error": err}
         raise ValueError("unknown route")
 
@@ -970,6 +1018,10 @@ def ago_s(ts):
     return age(ts) + " ago" if ts else "unknown"
 
 
+def plain(text, cap=120):
+    return " ".join(str(text).split())[:cap]
+
+
 def untrusted(title, cap=120):
     return "untrusted title: " + json.dumps(" ".join(str(title).split())[:cap])
 
@@ -996,8 +1048,14 @@ def mate_events(b):
         elif n["kind"] == "dialog":
             a = agents[n["pane"]]
             ev[f"dialog:{a.get('session') or a['pane']}"] = f"needs-you dialog {a['pane']} {a['title']}{role_s(a)}"
+    for r in b.get("requests") or []:
+        if r.get("stale") or r.get("overdue"):
+            why = "overdue" if r.get("overdue") else "stale"
+            ev[f"request:{r['id']}:{why}:{int(r['updated'])}"] = (
+                f"request {r['id']} {r['priority']} {why} ({r['status']}, owner {r.get('owner') or '-'}) "
+                f"{plain(r['who'])}: {plain(r['title'])}")
     for i in b.get("interrupts") or []:
-        if i["kind"] == "ticket.authorize":
+        if i["kind"] in MATE_INTERRUPT_KINDS:
             ev[interrupt_key(i)] = interrupt_line(i)
     for a in b.get("agents") or []:
         key = a.get("session") or a["pane"]
@@ -1021,6 +1079,8 @@ def mate_events(b):
     except (OSError, ValueError):
         pass
     for e in b["epics"]:
+        if e.get("stage") == "ready" and not e.get("paused"):
+            ev[f"epic-ready:{e['epic']}"] = f"plan-ready epic {e['epic']} was approved in planning; start its lead"
         live_segs = e["counts"].get("building", 0) + e["counts"].get("pr-open", 0)
         if e.get("lead") and not e.get("lead_pane") and live_segs and not e.get("paused") and b.get("agents") is not None:
             ev[f"leaderless:{e['epic']}:{e['lead']['session']}"] = (
@@ -1064,7 +1124,7 @@ def digest(b):
     trouble += [f"- {line.removeprefix('trouble ')}" for k, line in mate_events(b).items() if k.startswith("leaderless:")]
     ready = [f"- `{a['pane']}` reported done: {a['watch']['text']}"
              for a in b.get("agents") or [] if a.get("watch") and a["watch"]["state"] == "done"]
-    ready += [f"- {line.removeprefix('ready ')}" for k, line in mate_events(b).items() if k.startswith("epic-done:")]
+    ready += [f"- {line.removeprefix('ready ')}" for k, line in mate_events(b).items() if k.startswith(("epic-done:", "epic-ready:"))]
     under = []
     for e in b["epics"]:
         segs = [s["id"] + (f" #{s['pr']}" if s.get("pr") else "") for st in ("building", "pr-open") for s in e["segments"].get(st, [])]
@@ -1073,7 +1133,17 @@ def digest(b):
     under += [f"- `{a['pane']}` waiting: {a['watch']['text']}"
               for a in b.get("agents") or [] if a.get("watch") and a["watch"]["state"] == "waiting"]
     needs += [f"- client hours to confirm: {c} {h:.2f}h in {n} row(s)" for c, (n, h) in sorted(hrs.items())]
-    for title, items in (("Needs you", needs), ("Trouble", trouble), ("Ready", ready), ("Under way", under)):
+    requests = [f"- `{r['id']}` {r['priority']} {r['status']} · {plain(r['who'])}: {plain(r['title'])}"
+                + "".join(f" · {f.upper()}" for f in ("stale", "overdue") if r.get(f))
+                for r in b.get("requests") or []]
+    auto = []
+    for d in b.get("decisions") or []:
+        by = (d.get("answer") or {}).get("by")
+        if d["status"] == "answered" and by in ("auto", "mate") and d["answer"]["at"] > time.time() - 86400:
+            label = next((o["label"] for o in d["options"] if o["key"] == d["answer"]["choice"]), "")
+            who = " by mate" if by == "mate" else ""
+            auto.append(f"- `{d['id']}` [{d.get('epic') or '-'}] {d['title']} -> ({d['answer']['choice']}) {label}{who} (pane {d.get('pane') or '-'}, {ago_s(d['answer']['at'])})")
+    for title, items in (("Needs you", needs), ("Requests", requests), ("Trouble", trouble), ("Ready", ready), ("Under way", under), ("Auto-applied (24h)", auto)):
         out.append(f"## {title} ({len(items)})")
         out.extend(items or ["- nothing"])
         if title == "Needs you" and n_snoozed:
@@ -1122,7 +1192,7 @@ def auto_compact(b, st):
                 or a["status"] not in ("idle", "done") or a["attention"] in ("blocked", "working")
                 or not active or now - active < COMPACT_IDLE or done.get(sid, {}).get("ctx") == ctx):
             continue
-        out, err = asks.herdr("agent", "prompt", a["pane"], COMPACT_MSG)
+        out, err = asks.prompt(a["pane"], COMPACT_MSG)
         ok = out is not None
         with open(MATE / "compact.log", "a") as f:
             f.write(f"{datetime.now():%Y-%m-%d %H:%M} {'compact' if ok else 'compact-failed'} {a['pane']} {a.get('epic')} "
