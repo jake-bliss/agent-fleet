@@ -135,6 +135,8 @@ class RenderRequestsTest(unittest.TestCase):
         self.assertNotIn("REQUESTS", board.render({**b, "requests": []}, False))
         page = (ROOT / "board/board_page.html").read_text()
         self.assertIn("requestRow", page)
+        self.assertIn('<details ${dk("requests", true)}>', page)
+        self.assertNotIn('dk("requests")} open', page)
 
 
 if __name__ == "__main__":
