@@ -229,7 +229,6 @@ The board and `adw-ask` drive two terminal backends: the herdr CLI (pane ids lik
 `hc` (terminal ids `t7`, or `<machine>/t7` on another node). `adw-mux` is the command line for the second;
 `$ADW_HOME/mux.json` (from `config/mux.example.json`) names the `hc` binary, the optional space and the node names.
 The `hc-session-state.sh` hook records each terminal's session id so the board can match terminals to sessions.
-`adw-respawn <terminal>` restarts a terminal keeping its machine, cwd, name, labels and session.
 
 ## Running it under launchd
 

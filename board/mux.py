@@ -4,7 +4,6 @@ import fcntl
 import json
 import os
 import re
-import shlex
 import shutil
 import socket
 import subprocess
@@ -322,38 +321,6 @@ def keys(pane, names):
 
 def focus(pane):
     return None, NO_FOCUS
-
-
-def fleet_claude_argv(settings=True, session=None):
-    """The one definition of how fleet sessions launch claude: bypass mode, the spawned-settings file for leads and
-    sessions, and --resume when restarting one."""
-    argv = ["claude", "--dangerously-skip-permissions"]
-    if settings:
-        argv += ["--settings", str(ADW_HOME / "spawned-settings.json")]
-    return argv + (["--resume", session] if session else [])
-
-
-def respawn_argv(old, session):
-    """The old terminal's own claude argv without --resume/--continue, then --resume <session>, with bypass added if absent."""
-    if len(old or []) == 3 and Path(old[0]).name in ("sh", "bash", "zsh") and old[1].startswith("-") and "c" in old[1]:
-        try:
-            inner = shlex.split(old[2])
-        except ValueError:
-            inner = []
-        old = inner[1:] if inner[:1] == ["exec"] else inner
-    if not old or Path(old[0]).name != "claude":
-        old = fleet_claude_argv()
-    out, skip = [], False
-    for a in old:
-        if skip:
-            skip = False
-        elif a == "--resume":
-            skip = True
-        elif a != "--continue":
-            out.append(a)
-    if "--dangerously-skip-permissions" not in out:
-        out.insert(1, "--dangerously-skip-permissions")
-    return out + ["--resume", session]
 
 
 def run_address(out, on):

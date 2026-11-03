@@ -66,7 +66,7 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `board/` | the ADW Board, `adw-ask` (decision queue), `adw-status` (tab state), `adw-epic-report` (per-epic cost and cycle report), `reqs.py` (request queue), `mux.py` and `terminals.py` (herdr app terminal control and live terminal map) |
 | `bin/` | `cow-worktree`, `ci-preflight`, `review-receipt`, the pre-push gate, `adw-lead-state`, pruning |
 | `bin/req` | `req add\|ls\|show\|set\|doing\|wait\|done\|told`: the queue of ad-hoc asks, kept in `$ADW_HOME/state/requests.json`; shown on the board and the digest, stale ones wake the first mate |
-| `bin/adw-mux`, `adw-respawn` | `adw-mux list\|get\|send\|read\|keys\|focus\|run` for herdr app terminals (ids `t7` or `<machine>/t7`; config `$ADW_HOME/mux.json` from `config/mux.example.json`); `adw-respawn <terminal>` restarts one keeping its cwd, name, labels and session |
+| `bin/adw-mux` | `adw-mux list\|get\|send\|read\|keys\|focus\|run` for herdr app terminals (ids `t7` or `<machine>/t7`; config `$ADW_HOME/mux.json` from `config/mux.example.json`) |
 | `bin/review-tier`, `mate-cost` | `review-tier <worktree>` prints high or low for a diff (the gate refuses a Claude-review skip on high); `mate-cost` reports the first mate's daily context and cost |
 | `bin/pr-state`, `pr-ship`, `pr-reply` | PR CI/review/merge state, rule-gated merge, review-thread replies; configured by `$ADW_HOME/pr-tools.json` |
 | `bin/codex-review`, `claude-review`, `efficiency-report` | second-model review, headless Claude review (both write a verdict file for `review-receipt --report`), context-spend report |

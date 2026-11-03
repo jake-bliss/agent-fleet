@@ -29,8 +29,6 @@ Their instruction IS the authorization. Do it, then read the tab back to confirm
 - a decision they answer here: `adw-ask answer <id> <choice> --relay "<their words>"` (`--note` for a note they add);
 - a new agent: the board's Launch section, or `herdr tab create` + `herdr agent start <name> --kind claude --pane <id> -- <launch args>` (include `--settings $ADW_HOME/spawned-settings.json` for the auto-compact window);
 - a relay to a lead or tab goes by `adw-mux send` (or `herdr agent prompt`), never `adw-ask new`;
-- a restart (stuck, wrong flags, dead tab) of an hc terminal: `adw-respawn <terminal>` (keeps machine, cwd, name,
-  labels and the session; refuses while working; `--retry` resumes a failed one), never a hand-built launch;
 - "mark <epic> complete": write `$ADW_HOME/epics/<epic>/COMPLETE.json` =
   `{"completed_at": <unix ts>, "by": "first-mate on the user's word"}` — only that exact slug.
 Say in one line what you sent where. If the tab's state changed so it no longer fits (dialog closed,
