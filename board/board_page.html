@@ -552,7 +552,7 @@ function render(b) {
     + (cleared.length ? `<details ${dk("cleared")}><summary>${cleared.length} cleared without you</summary>${cleared.map(clearedRow).join("")}</details>` : "")
     + (sleeping.length ? `<details ${dk("snoozed")}><summary>${sleeping.length} snoozed</summary>${sleeping.map(([k, h]) =>
         `<div class="actions"><span class="amber">snoozed until ${untilS(snz[k])}</span><button class="ghost" data-snooze="${esc(k)}" data-for="off">Unsnooze</button></div>${h}`).join("")}</details>` : "")
-    + ((b.requests || []).length ? `<details ${dk("requests")} open><summary>Requests <span class="n">${b.requests.length}</span></summary>${b.requests.map(requestRow).join("")}</details>` : "")
+    + ((b.requests || []).length ? `<details ${dk("requests", true)}><summary>Requests <span class="n">${b.requests.length}</span></summary>${b.requests.map(requestRow).join("")}</details>` : "")
     + (bg.length ? `<div class="dim" style="font-size:13px;margin-top:8px">Waiting on their own background agents: ${bg.map(a => esc(a.pane)).join(", ")}.</div>` : "")
     + (autos.length ? `<details ${dk("autoapplied")}><summary>Auto-applied (24h) <span class="n">${autos.length}</span></summary>${autos.map(autoRow).join("")}</details>` : "")
     + (answered.length ? `<details ${dk("answered")}><summary>${answered.length} answered in the last 24h</summary>${answered.map(decisionRow).join("")}</details>` : "");

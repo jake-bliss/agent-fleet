@@ -9,7 +9,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import sys
 import time
 from pathlib import Path
@@ -92,8 +91,6 @@ def main(argv=None):
             argv = rec.get("argv") or (rec.get("foreground") or {}).get("argv") or []
             if not argv:
                 raise Fail(f"{a.terminal}: no launch argv recorded; refusing to exit it")
-            if not mach and not shutil.which(argv[0]):
-                raise Fail(f"{argv[0]} is not on PATH here; left untouched")
             labels = {k: v for k, v in (rec.get("labels") or {}).items() if k != "adw.respawn"}
             j = {"old_address": old, "session": session, "machine": mach, "cwd": rec.get("cwd"), "name": rec.get("name"),
                  "labels": labels, "argv": argv, "shell": rec.get("shell")}
@@ -137,7 +134,7 @@ def main(argv=None):
                     cmd += ["--label", f"{k}={v}"]
                 inner = shlex.join(mux.respawn_argv(j["argv"], j["session"]))
                 shell = j.get("shell") or ("/bin/sh" if j["machine"] else os.environ.get("SHELL") or "/bin/sh")
-                out, err = mux.hc(*cmd, "--json", "--", shell, "-lc", f"exec {inner}", timeout=60)
+                out, err = mux.hc(*cmd, "--json", "--", shell, "-lic", f"exec {inner}", timeout=60)
                 if out is None:
                     raise Fail(f"hc run failed: {err}")
                 new = mux.run_address(out, j["machine"])

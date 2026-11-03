@@ -120,7 +120,7 @@ class Rig(unittest.TestCase):
     def add(self, addr, state="idle", argv=None, labels=None, name="lead-1", cwd="/work", sess=SESSION, term_state="live"):
         d = self.data()
         d["terminals"][addr] = {"address": addr, "state": term_state, "name": name, "cwd": cwd, "labels": labels or {},
-                                "argv": argv or ["claude", "--dangerously-skip-permissions", "--settings", "/s.json", "--resume", "old"],
+                                "argv": argv if argv is not None else ["claude", "--dangerously-skip-permissions", "--settings", "/s.json", "--resume", "old"],
                                 "status": {"app": "claude-code", "state": state}}
         self.write(d)
         if sess:
@@ -170,13 +170,13 @@ class TestRespawn(Rig):
         self.assertEqual(r.returncode, 0, r.stderr)
         run = next(c for c in self.data()["log"] if c[0] == "run")
         i = run.index("--")
-        self.assertEqual(run[i + 1:i + 3], ["/bin/sh", "-lc"])
+        self.assertEqual(run[i + 1:i + 3], ["/bin/sh", "-lic"])
 
-    def test_missing_launcher_fails_before_the_old_terminal_is_exited(self):
-        self.add("t7", argv=["no-such-agent-binary", "--resume", "old"])
+    def test_missing_argv_fails_before_the_old_terminal_is_exited(self):
+        self.add("t7", argv=[])
         r = self.run_respawn("t7")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("not on PATH", r.stderr)
+        self.assertIn("no launch argv", r.stderr)
         d = self.data()
         self.assertIn("t7", d["terminals"])
         self.assertFalse(any(c[0] in ("keys", "send", "rm", "run") for c in d["log"]))
