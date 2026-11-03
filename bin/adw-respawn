@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -40,6 +41,13 @@ def poll(fn, timeout=None):
             return None
         time.sleep(0.5)
 
+
+def launchable(shell, prog):
+    try:
+        return subprocess.run([shell, "-lic", f"command -v {shlex.quote(prog)}"], stdin=subprocess.DEVNULL,
+                              capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="adw-respawn", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -91,6 +99,8 @@ def main(argv=None):
             argv = rec.get("argv") or (rec.get("foreground") or {}).get("argv") or []
             if not argv:
                 raise Fail(f"{a.terminal}: no launch argv recorded; refusing to exit it")
+            if not mach and not launchable(rec.get("shell") or os.environ.get("SHELL") or "/bin/sh", argv[0]):
+                raise Fail(f"{argv[0]} is not found by a login shell here; left untouched")
             labels = {k: v for k, v in (rec.get("labels") or {}).items() if k != "adw.respawn"}
             j = {"old_address": old, "session": session, "machine": mach, "cwd": rec.get("cwd"), "name": rec.get("name"),
                  "labels": labels, "argv": argv, "shell": rec.get("shell")}

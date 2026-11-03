@@ -182,6 +182,16 @@ class TestRespawn(Rig):
         self.assertFalse(any(c[0] in ("keys", "send", "rm", "run") for c in d["log"]))
         self.assertFalse(self.journal("local-t7").exists())
 
+    def test_launcher_missing_in_login_shell_fails_before_the_old_terminal_is_exited(self):
+        self.add("t7", argv=["no-such-agent-binary", "--resume", "old"])
+        r = self.run_respawn("t7")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not found by a login shell", r.stderr)
+        d = self.data()
+        self.assertIn("t7", d["terminals"])
+        self.assertFalse(any(c[0] in ("keys", "send", "rm", "run") for c in d["log"]))
+        self.assertFalse(self.journal("local-t7").exists())
+
     def test_bypass_added_when_missing(self):
         self.add("t7", argv=["claude", "--model", "opus", "--resume", "x"])
         r = self.run_respawn("t7")
