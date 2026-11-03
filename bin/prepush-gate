@@ -75,7 +75,7 @@ PY
   lineage_pids=$(for c in $(git rev-list ${mb:+$mb..}"$local_sha" 2>/dev/null | head -50); do patch_id "$c"; done | sort -u)
   ancestors=$(git rev-list ${mb:+$mb..}"$local_sha" 2>/dev/null)
 
-  read -r claude codex < <(python3 - "$HIST" "$local_sha" "$head_pid" <<PY
+  read -r claude codex skip < <(python3 - "$HIST" "$local_sha" "$head_pid" <<PY
 import json, sys
 hist = json.load(open(sys.argv[1])); sha, head_pid = sys.argv[2], sys.argv[3]
 try:
@@ -87,13 +87,28 @@ except Exception:
     pass
 anc = set("""$ancestors""".split()); pids = set("""$lineage_pids""".split())
 def latest(who, ok):
-    rows = [h for h in hist if h.get("who") == who and ok(h)]
+    rows = [h for h in hist if h.get("who") == who and h.get("verdict") != "skip" and ok(h)]
     return rows[-1]["verdict"] if rows else "none"
 claude = latest("claude", lambda h: h["sha"] == sha or h["sha"] in anc or (h.get("patch_id") and h["patch_id"] in pids))
 codex = latest("codex", lambda h: h["sha"] == sha or (head_pid and h.get("patch_id") == head_pid))
-print(claude, codex)
+skip = "yes" if any(h.get("who") == "claude" and h.get("verdict") == "skip" and (h["sha"] == sha or h["sha"] in anc or (h.get("patch_id") and h["patch_id"] in pids)) for h in hist) else "no"
+print(claude, codex, skip)
 PY
 )
+  if [ "$claude" = none ] && [ "$skip" = yes ]; then
+    REVIEW_TIER_BIN="${REVIEW_TIER:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/review-tier}"
+    [ -x "$REVIEW_TIER_BIN" ] || REVIEW_TIER_BIN="$(command -v review-tier || true)"
+    [ -n "$mb" ] || fail "claude skip receipt refused: no merge base with $BASE" \
+      "The tier cannot be computed without one; fetch origin or run review-receipt claude pass."
+    [ -n "$REVIEW_TIER_BIN" ] || fail "claude skip receipt refused: review-tier not found"
+    tier_out=$("$REVIEW_TIER_BIN" "$mb..$local_sha" 2>&1)
+    if [ "$(head -1 <<<"$tier_out")" = low ]; then
+      claude=pass
+    else
+      fail "claude skip receipt refused: this diff is not low tier" "$(tail -1 <<<"$tier_out")" \
+        "High tier needs a claude review: review-receipt claude pass ... --report <verdict file>"
+    fi
+  fi
   [ "$claude" = pass ] || fail "no passing claude review for this work (latest: $claude)" \
     "A claude review of this commit or an ancestor of it is enough; a newer fail overrides it."
   [ "$codex" = pass ] || fail "no passing codex review of ${local_sha:0:10} (latest: $codex)" \

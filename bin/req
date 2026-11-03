@@ -1,0 +1,13 @@
+#!/bin/sh
+# The queue is one file under $ADW_HOME/state; a machine without the ADW checkout forwards to the hub
+# named by ADW_HUB (user@host) over ssh.
+ADW_HOME="${ADW_HOME:-$HOME/.claude/adw}"
+if [ -f "$ADW_HOME/board/reqs.py" ]; then
+  exec python3 "$ADW_HOME/board/reqs.py" "$@"
+fi
+[ -n "${ADW_HUB:-}" ] || { echo "req: no $ADW_HOME/board/reqs.py here; set ADW_HUB=user@host to use the hub's queue" >&2; exit 1; }
+remote="export PATH=\$HOME/.local/bin:\$PATH; ADW_REQ_BY=$(printf %s "${ADW_REQ_BY:-${HC_TERMINAL_ID:-cli}}" | sed "s/'//g") exec python3 ~/.claude/adw/board/reqs.py"
+for a in "$@"; do
+  remote="$remote '$(printf %s "$a" | sed "s/'/'\\\\''/g")'"
+done
+exec ssh "$ADW_HUB" "$remote"

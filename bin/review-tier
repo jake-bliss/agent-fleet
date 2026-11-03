@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""review-tier [<worktree> | <base>..<head>]  ->  "high"|"low" plus a reason line.
+
+high: more than 400 added+deleted lines, or any changed path in the risky set (edit RISKY for your repos).
+Default range: merge-base with the origin default branch..HEAD, in the current directory.
+"""
+import re
+import subprocess
+import sys
+
+MAX_LINES = 400
+RISKY = re.compile(
+    r"(^|/)(sidekiq|workers?|consumers?|jobs)/|_job\.rb$"
+    r"|(^|/)db/(migrate/|structure\.sql|schema\.rb)"
+    r"|refund|pric(e|ing)|charge|commission|payout|payment|checkout|wallet"
+    r"|(^|/|_)orders?(/|_|\.)|permission|polic(y|ies)|(^|/|_)roles?(/|_|\.)"
+    r"|secret|credential|token|tenant|migrat|webhook|(?<!a)sync|ledger"
+    r"|(^|[^a-z]|o)auth(?!ors?([^a-z]|$))|(^|[^a-z])lock(s|ed|ing)?([^a-z]|$)"
+    r"|prepush-gate|review-receipt|review-tier|(^|/)hooks/", re.I)
+LOCKFILE = re.compile(r"(^|/)(Gemfile\.lock|pnpm-lock\.yaml|package-lock\.json|yarn\.lock)$|\.lock$")
+
+
+def git(cwd, *args):
+    r = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True)
+    if r.returncode:
+        sys.exit(f"review-tier: git {' '.join(args)}: {r.stderr.strip()}")
+    return r.stdout
+
+
+def default_base(cwd):
+    for ref in ("refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"):
+        r = subprocess.run(["git", "-C", cwd, "rev-parse", "--verify", "--quiet", ref], capture_output=True, text=True)
+        if r.returncode == 0:
+            return ref.replace("refs/remotes/", "")
+    sys.exit("review-tier: no origin default branch to diff against")
+
+
+def tier(cwd, rng):
+    stat = git(cwd, "diff", "--numstat", "--no-renames", rng)
+    lines, paths = 0, []
+    for row in stat.splitlines():
+        a, d, path = row.split("\t", 2)
+        if LOCKFILE.search(path):
+            continue
+        lines += (int(a) if a.isdigit() else 0) + (int(d) if d.isdigit() else 0)
+        paths.append(path)
+    hit = next((p for p in paths if RISKY.search(p)), None)
+    if lines > MAX_LINES:
+        return "high", f"{lines} changed lines > {MAX_LINES}"
+    if hit:
+        return "high", f"risky path: {hit}"
+    return "low", f"{lines} changed lines in {len(paths)} files, no risky paths"
+
+
+def main(argv):
+    arg = argv[1] if len(argv) > 1 else "."
+    if ".." in arg:
+        cwd, rng = ".", arg
+    else:
+        cwd = arg
+        rng = git(cwd, "merge-base", default_base(cwd), "HEAD").strip() + "..HEAD"
+    t, why = tier(cwd, rng)
+    print(t)
+    print(why)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

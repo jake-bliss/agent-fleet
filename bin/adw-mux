@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Talk to herdr app (hc) terminals.
+Usage: adw-mux list [--json] | get PANE | send PANE TEXT|- | read PANE [--lines N] | keys PANE KEY... | focus PANE
+       adw-mux run --name N --cwd DIR [--space ID] [--on MACHINE] -- ARGV...
+Terminal ids: t7 (this machine), <machine>/t7 (another machine hc knows). Exit: 0 ok, 1 backend error, 2 usage."""
+import argparse
+import importlib.util
+import json
+import os
+import sys
+from pathlib import Path
+
+ADW = Path(os.environ.get("ADW_HOME") or Path.home() / ".claude/adw") / "board"
+
+
+def load_asks():
+    spec = importlib.util.spec_from_file_location("asks", ADW / "asks.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def fail(err):
+    print(f"adw-mux: {err}", file=sys.stderr)
+    return 1
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="adw-mux", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("list")
+    p.add_argument("--json", action="store_true")
+    for name in ("get", "focus"):
+        sub.add_parser(name).add_argument("pane")
+    p = sub.add_parser("send")
+    p.add_argument("pane")
+    p.add_argument("text")
+    p = sub.add_parser("read")
+    p.add_argument("pane")
+    p.add_argument("--lines", type=int, default=200)
+    p = sub.add_parser("keys")
+    p.add_argument("pane")
+    p.add_argument("keys", nargs="+")
+    p = sub.add_parser("run")
+    p.add_argument("--name", required=True)
+    p.add_argument("--cwd", required=True)
+    p.add_argument("--space")
+    p.add_argument("--on")
+    p.add_argument("argv", nargs="+")
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as exc:
+        return 2 if exc.code else 0
+    asks = load_asks()
+    if a.cmd != "list" and a.cmd != "run" and not asks.mux.valid(a.pane):
+        print(f"adw-mux: bad pane id {a.pane!r}", file=sys.stderr)
+        return 2
+    if a.cmd == "list":
+        agents = asks.list_agents()
+        if agents is None:
+            return fail("no terminal backend available")
+        if a.json:
+            print(json.dumps({"agents": agents}))
+        else:
+            for x in agents:
+                print(f"{x['pane_id']}\t{x['agent']}\t{x['agent_status']}\t{x.get('name') or '-'}\t{x.get('cwd', '')}")
+        return 0
+    if a.cmd == "get":
+        info = asks.agent_info(a.pane)
+        if not info:
+            return fail(f"no agent in {a.pane}")
+        print(json.dumps(info))
+        return 0
+    if a.cmd == "run":
+        if not asks.mux.available():
+            return fail("hc is not installed")
+        addr, err = asks.mux.start(a.name, a.cwd, a.argv, space=a.space, on=a.on)
+        if err:
+            return fail(err)
+        print(addr)
+        return 0
+    if a.cmd == "send":
+        text = sys.stdin.read() if a.text == "-" else a.text
+        out, err = asks.prompt(a.pane, text)
+    elif a.cmd == "read":
+        out, err = asks.read_pane(a.pane, a.lines)
+    elif a.cmd == "keys":
+        out, err = asks.send_keys(a.pane, a.keys)
+    else:
+        out, err = asks.focus(a.pane)
+    if err:
+        return fail(err)
+    if a.cmd == "read":
+        sys.stdout.write(out or "")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

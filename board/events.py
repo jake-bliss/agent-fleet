@@ -943,14 +943,16 @@ def poll(sources=None, dry_run=False, db=None):
 
 
 def pane_key(p):
+    if asks.mux.is_hc(p):
+        return asks.pane_ref(p)
     m = asks.REMOTE_PANE.fullmatch(p or "")
     return m.group(2) if m and m.group(1) == asks.MACHINE else p
 
 
 def fleet_state():
-    """Lead panes and attention per pane, from the board's own agent loading. None when herdr is unavailable."""
-    if not shutil.which("herdr"):
-        warn_once("herdr", "herdr is not installed on PATH; wakes are held")
+    """Lead panes and attention per pane, from the board's own agent loading. None when no terminal backend is available."""
+    if not (shutil.which("herdr") or asks.mux.available()):
+        warn_once("herdr", "neither herdr nor hc is installed on PATH; wakes are held")
         return None
     epics = [e for e in (board.load_epic(d) for d in sorted(EPICS.iterdir()) if d.is_dir()) if e]
     agents = board.load_agents(epics)
@@ -982,7 +984,7 @@ def wake_text(rows):
 def deliver(db, cfg, state=None, prompt=None):
     """Wake leads, one batched message per target. A blocked pane, a rate-limited target or a failed prompt leaves
     the events pending for the next poll."""
-    prompt = prompt or asks.herdr
+    prompt = prompt or (lambda *a: asks.prompt(a[-2], a[-1]))
     rows = db.execute("SELECT * FROM events WHERE level='wake' AND delivered_at IS NULL ORDER BY id").fetchall()
     live = []
     for r in rows:
@@ -1107,6 +1109,21 @@ def open_interrupts(db):
             at[ref] = len(out)
         out.append(r)
     return out
+
+
+def efficiency_due(db, label=None):
+    ts = now()
+    label = label or datetime.fromtimestamp(ts, timezone.utc).strftime("%G-W%V")
+    cur = db.execute(
+        "INSERT OR IGNORE INTO events(source,ext_id,ts,actor,actor_is_self,kind,object_ref,title,body,url,epic,level,reason,"
+        "routed_at,delivered_to,delivered_at,meta) VALUES('fleet',?,?,'adw-efficiency',1,'efficiency.due',?,?,?,NULL,NULL,'interrupt',?,?,'board',?,?)",
+        (f"efficiency-due:{label}", iso(datetime.fromtimestamp(ts, timezone.utc)), "efficiency-review",
+         f"efficiency review due ({label})",
+         "Run /efficiency-review: history.jsonl has the new day lines; fill changes.md results.", "weekly efficiency review",
+         ts, ts, "{}"))
+    if cur.rowcount:
+        db.execute("INSERT OR IGNORE INTO interrupts(event_id,created) VALUES(?,?)", (cur.lastrowid, ts))
+    return bool(cur.rowcount)
 
 
 def ack_interrupt(db, iid, by="owner", note=None):
@@ -1291,7 +1308,7 @@ def work_start(db, cfg, ref, epic=None, pane=None, board_id=None):
         item_id, bid = parse_ticket(ref, board_id)
     except ValueError as e:
         return 2, f"refused: {e}"
-    pane = pane or os.environ.get("HERDR_PANE_ID") or None
+    pane = pane or asks.pane_ref(asks.own_pane())
     pane = pane_key(pane) if pane and board.PANE_ID.fullmatch(pane) else None
     requester = epic or pane
     t = get_ticket(db, item_id)
@@ -1322,7 +1339,7 @@ def work_stop(db, ticket=None, epic=None, pane=None):
         raise ValueError("bad epic")
     if pane is not None and not board.PANE_ID.fullmatch(pane):
         raise ValueError("bad pane")
-    env = None if pane or ticket else os.environ.get("HERDR_PANE_ID")
+    env = None if pane or ticket else asks.pane_ref(asks.own_pane())
     pane = pane_key(pane) if pane else pane_key(env) if env and board.PANE_ID.fullmatch(env) else None
     item = parse_ticket(ticket)[0] if ticket else None
     if item and not (epic or pane):
@@ -1538,6 +1555,7 @@ def main(argv=None):
     p.add_argument("ext_id")
     sub.add_parser("digest-post")
     sub.add_parser("interrupts")
+    sub.add_parser("efficiency-due")
     p = sub.add_parser("ack")
     p.add_argument("interrupt_id", type=int)
     p.add_argument("--by", default="cli")
@@ -1590,6 +1608,8 @@ def main(argv=None):
     elif a.cmd == "interrupts":
         for i in open_interrupts(db):
             print(f"{i['id']:>4} [{i['epic'] or '-'}] {clean(i['title'])}  {i['url'] or ''}")
+    elif a.cmd == "efficiency-due":
+        print("raised" if efficiency_due(db) else "already raised")
     elif a.cmd == "ack":
         print("acked" if ack_interrupt(db, a.interrupt_id, a.by, a.note) else "not found, already acked, or reopened by the owner")
     elif a.cmd == "reopen":

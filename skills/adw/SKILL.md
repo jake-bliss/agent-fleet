@@ -58,9 +58,9 @@ others run the full suite locally (or on a remote CI box). **The PR review bot**
    reviewer on the diff vs `origin/<base>` + `$ADW_HOME/review/review-contract.md` + every touched lens,
    **not** the brief (`$ADW_HOME/review/lenses/adversarial-review.md`); **6c**
    `codex-review diff <worktree> --base origin/<base>` (contract + matching lenses built in; prints the verdict only).
-   **Low** tier may skip 6a (never if Codex built): Codex + your 6b checklist with
-   `callsite-coverage.md` is then the recorded Claude review. Re-check tier on the real diff — it only
-   goes up.
+   Tier = max(step 0 plan tier, `review-tier <worktree>` on the real diff; high: more than 400 changed lines or a
+   risky path; it only goes up). **High** → 6a + 6c. **Low** → 6c only (6a never skipped if Codex built), then
+   `review-receipt claude skip "low tier"`; the gate recomputes the tier and refuses a skip on high.
 4. **Adjudicate once** — verify every finding in code; where 6a/6c disagree, read the line, say who
    was right. **6b** checklist: DoD, scope fences, the repo's location/shape conventions. Green tests
    and a clean linter are preconditions, not evidence. **Only a contract `fail` blocks** (any CRITICAL,
@@ -69,7 +69,7 @@ others run the full suite locally (or on a remote CI box). **The PR review bot**
    --unique N --sev S` and the same for `codex` (adjudicated-real findings, how many the other model
    missed, worst severity high|med|low|none; it feeds the review ledger, `review-receipt --ledger`) — pass
    = adjudicated, blockers become the fix list. `fail` only when it must be redesigned (a later round-1
-   pass clears it).
+   pass clears it). Low tier: record only the codex line plus the claude skip.
 5. **Fix → Codex-only delta** — ONE combined fix list. Codex reviews `git diff <round-1 SHA>..HEAD`
    **and** existing behaviour the fixes could break; no second reviewer agent. Run it with
    `-o <scratchpad>/codex-delta.md` and read only the verdict + findings lines. Rerun `ci-preflight`.
@@ -78,8 +78,8 @@ others run the full suite locally (or on a remote CI box). **The PR review bot**
 6. **Gate** — final commit: `ci-preflight` green (`fast-green` in the fast tier), then
    `review-receipt codex pass "<last Codex pass>"`. The hook needs CI + Codex on this SHA, Claude on
    this SHA or an ancestor (or the same diff rebased). `$ADW_HOME/docs/ci-gate.md`.
-7. **Push** — fast tier: `git push` + `gh pr create --fill --draft`; ONE backgrounded
-   `pr-state <pr> --wait ci > <scratchpad>/checks.log 2>&1` (never poll); read only failing jobs/tests
+7. **Push** — fast tier: `git push` + `gh pr create --fill --draft`; ONE backgrounded (under a lead: foreground, see
+   **Waits under a lead**) `pr-state <pr> --wait ci > <scratchpad>/checks.log 2>&1` (never poll); read only failing jobs/tests
    (`pr-state <pr> --failures`, or `gh run view --log-failed | rg -m 40 …`). **Red** → worker fix, Codex delta,
    `ci-preflight`, push, still draft; plainly infra (runner shutdown, expired log) or a known flake on
    untouched code → `gh run rerun <id> --failed` once, logged. **Green on current head** →
@@ -95,7 +95,7 @@ others run the full suite locally (or on a remote CI box). **The PR review bot**
    `$ADW_HOME/pr-tools.json` (merge once green).
 9. **Merge** — bot approved current head + CI green + `mergeStateStatus` `CLEAN` → `pr-ship <pr>`
    (squash-merges only when those hold; exit 3 = wait, 4 = the user's call) without asking, then ONE
-   backgrounded `pr-state <pr> --wait deployed` (exit 2 = a deploy failed → the user; exit 4 = no deploy ran or it was cancelled/superseded → check the default branch's latest deploy covers the commit, not an escalation). Anything else → the
+   backgrounded (under a lead: foreground) `pr-state <pr> --wait deployed` (exit 2 = a deploy failed → the user; exit 4 = no deploy ran or it was cancelled/superseded → check the default branch's latest deploy covers the commit, not an escalation). Anything else → the
    user approves or forces: file the ask with the merge option starting `ship <repo>#<n>@<head sha>`; on
    that answer run `pr-ship <pr> --approved-by <ask-id>` (any push voids it).
 
@@ -105,9 +105,21 @@ fix-streak stop or blocker after round 2; bot high-risk or 3 rounds unapproved; 
 authority. Never stop to confirm push, PR open or ready.
 "Surface to the user" = an `adw-ask` decision (`$ADW_HOME/docs/CLAUDE.snippet.md`): finding, what was
 tried, why stuck, each option's consequence, recommendation — then stop. As `/adw-lead`'s subagent:
-return the question to the lead (it files) and don't run `adw-status`. Standalone herdr tab:
+return the question to the lead (it files) and don't run `adw-status`. Every `adw-ask new` passes `--class`
+(refused without one): gated (wait for the owner) merge, prod-write, money, auth, customer-data, scope, irreversible;
+non-gated reversible, design, split, redesign, fix-streak, size, sequencing. With `--recommend` the non-gated ones are
+answered at once (read the `[adw-ask <id> answered]` prompt, carry on). Merge asks keep the `ship <repo>#<n>@<sha>`
+label and can't use `--default-after`. Relays to the owner or a lead go by `adw-mux send`, never `adw-ask new`.
+Standalone terminal tab:
 `adw-status waiting "<CI / review bot on PR>" --for <expected>` before a waiting turn ends;
 `adw-status done|failed "<one line>"` at the end.
+
+**Waits under a lead.** As `/adw-lead`'s subagent, never end a turn while a PR wait is pending: every turn you
+end with background work running wakes the lead, which re-reads its whole context to do nothing. Run the
+`pr-state --wait` calls of steps 7-9 in the foreground with `--timeout 9m` and the Bash timeout at 600000;
+exit 1 (timeout) means the same call again, nothing in between, for at most 2 h in all (the backgrounded
+default); still exit 1 after that, handle it as that step's timeout (`deployed`: as exit 4). Standalone tab:
+background them as written.
 
 One `/adw` = one segment = one PR; epics → `/adw-lead`. Avoid stacking on unmerged bases where seams
 allow; a stacked branch waits for its base PR to merge, then rebases.
