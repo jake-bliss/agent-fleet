@@ -18,7 +18,7 @@ ADW_HOME = Path(os.environ.get("ADW_HOME") or Path.home() / ".claude/adw")
 CONFIG = ADW_HOME / "mux.json"
 HC_AGENTS = {"claude-code": "claude", "codex": "codex"}
 STATUSES = {"idle": "idle", "working": "working", "done": "done"}
-TARGETED = ("get", "send", "keys", "read", "interrupt", "wait", "label", "kill")
+TARGETED = ("get", "send", "keys", "read", "interrupt", "wait", "label", "kill", "rm")
 NO_FOCUS = "focus is not supported for hc terminals"
 
 

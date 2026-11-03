@@ -608,6 +608,11 @@ def render(b, color, full=False):
             n += 1
     if not n:
         lines.append(f"  {G}nothing{X}")
+    if b.get("requests"):
+        lines.append(f"\n{B}REQUESTS{X} {D}(req ls){X}")
+        for r in b["requests"]:
+            flags = "".join(f" {R}{f.upper()}{X}" for f in ("stale", "overdue") if r.get(f))
+            lines.append(f"  {r['id']:<8} {r['priority']} {r['status']:<8} {plain(r['who'])}: {plain(r['title'])}" + flags)
     trouble = [a for a in agents or [] if a.get("watch") and a["watch"]["state"] in ("overdue", "stopped-silent", "failed")]
     waiting = [a for a in agents or [] if a.get("watch") and a["watch"]["state"] == "waiting"]
     if trouble or waiting:

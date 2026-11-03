@@ -103,9 +103,9 @@ active time and stay local until you confirm them.
 ## adw-ask: decisions for you
 
 ```bash
-adw-ask new --title "<one line>" --epic <slug> --body-file /tmp/ask.md \
+adw-ask new --class <class> --title "<one line>" --epic <slug> --body-file /tmp/ask.md \
   --option "a=<choice>" --option "b=<choice>" --recommend a \
-  [--default-after 4h]                                           # prints d-xxxxxx
+  [--default-after 4h]                                           # prints d-xxxxxx; classes: see Classes below
 adw-ask list [--all] [--json]
 adw-ask show <id>
 adw-ask wait <id> [--timeout SECONDS]     # blocks until answered

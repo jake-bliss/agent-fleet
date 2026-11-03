@@ -30,7 +30,7 @@ class Base(unittest.TestCase):
             mock.patch.object(asks, "seen_by_agent", lambda d: True),
             mock.patch.object(asks, "prompt", self.prompt),
             mock.patch("time.sleep", lambda s: None),
-            mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t13", "ADW_HC_MACHINE": "dell"}),
+            mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t13", "ADW_HC_MACHINE": "node-b"}),
         ]
         for p in patches:
             p.start()
@@ -135,7 +135,7 @@ class TestNew(Base):
 
     def test_auto_rescan_for_size_class_blocks_prod(self):
         d = {"id": "d-abcdef", "created": 1, "status": "open", "title": "Deploy to prod", "epic": "e", "body": "",
-             "class": "size", "options": [{"key": "a", "label": "x"}], "recommend": "a", "pane": "dell/t13",
+             "class": "size", "options": [{"key": "a", "label": "x"}], "recommend": "a", "pane": "node-b/t13",
              "session": None, "default_at": None}
         asks.save(d)
         with self.assertRaises(ValueError):
@@ -186,7 +186,7 @@ class TestDefaults(Base):
     def legacy(self, **kw):
         d = {"id": "d-abcdef", "created": 1, "status": "open", "title": "Pick one", "epic": "e", "body": "",
              "options": [{"key": "a", "label": "x"}, {"key": "b", "label": "y"}], "recommend": "a",
-             "pane": "dell/t13", "session": None, "default_at": 5, **kw}
+             "pane": "node-b/t13", "session": None, "default_at": 5, **kw}
         asks.save(d)
         return d
 
@@ -228,7 +228,7 @@ class TestBy(Base):
     def test_cli_default_is_agent_pane(self):
         i = self.make()
         self.cli("answer", i, "a")
-        self.assertEqual(asks.load(i)["answer"]["by"], "agent:dell/t13")
+        self.assertEqual(asks.load(i)["answer"]["by"], "agent:node-b/t13")
 
     def test_answer_from_the_asking_tab_is_not_typed_back_into_it(self):
         i = self.make()

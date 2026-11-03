@@ -100,6 +100,12 @@ class Rig(unittest.TestCase):
         self.env = {**os.environ, "HOME": str(self.home), "ADW_HOME": str(self.adw), "HC_BIN": str(self.bin), "ADW_MUX_TEST": "1",
                     "FAKE_STATE": str(self.state), "ADW_SESSIONS_DIR": str(self.tmp / "sessions"), "ADW_LOCK_DIR": str(self.tmp / "locks"),
                     "ADW_RESPAWN_TIMEOUT": "2"}
+        stub = self.tmp / "stubbin"
+        stub.mkdir()
+        (stub / "claude").write_text("#!/bin/sh\n")
+        (stub / "claude").chmod(0o755)
+        self.env["PATH"] = f"{stub}:{os.environ['PATH']}"
+        self.env["SHELL"] = "/bin/sh"
         self.env.pop("ADW_HC_MACHINE", None)
         for k in [k for k in self.env if k.startswith("HC_") and k != "HC_BIN"]:
             del self.env[k]
@@ -156,6 +162,24 @@ class TestRespawn(Rig):
                          ["claude", "--dangerously-skip-permissions", "--settings", "/s.json", "--resume", SESSION])
         run = next(c for c in d["log"] if c[0] == "run")
         self.assertTrue({"--bg", "--no-parent", "--outlive-parent"} <= set(run))
+        self.assertFalse(self.journal("local-t7").exists())
+
+    def test_launch_uses_the_login_shell_not_a_hardcoded_zsh(self):
+        self.add("t7")
+        r = self.run_respawn("t7")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        run = next(c for c in self.data()["log"] if c[0] == "run")
+        i = run.index("--")
+        self.assertEqual(run[i + 1:i + 3], ["/bin/sh", "-lc"])
+
+    def test_missing_launcher_fails_before_the_old_terminal_is_exited(self):
+        self.add("t7", argv=["no-such-agent-binary", "--resume", "old"])
+        r = self.run_respawn("t7")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not on PATH", r.stderr)
+        d = self.data()
+        self.assertIn("t7", d["terminals"])
+        self.assertFalse(any(c[0] in ("keys", "send", "rm", "run") for c in d["log"]))
         self.assertFalse(self.journal("local-t7").exists())
 
     def test_bypass_added_when_missing(self):

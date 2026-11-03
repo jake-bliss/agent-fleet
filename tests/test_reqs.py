@@ -101,7 +101,10 @@ class ReqsTest(unittest.TestCase):
         subprocess.run(["sh", str(ROOT / "bin/req"), "add", "it's $(rm -rf x)", "--who", "Ann"], env=env, check=True)
         cmd = out.read_text()
         self.assertIn("reqs.py 'add' 'it'\\''s $(rm -rf x)' '--who' 'Ann'", cmd)
-        self.assertIn("ADW_REQ_BY=t25", cmd)
+        self.assertIn("ADW_REQ_BY='t25' exec", cmd)
+        env["ADW_REQ_BY"] = "x; touch pwned"
+        subprocess.run(["sh", str(ROOT / "bin/req"), "ls"], env=env, check=True)
+        self.assertIn("ADW_REQ_BY='x; touch pwned' exec", out.read_text())
 
 
 class BoardRequestsTest(unittest.TestCase):
@@ -117,6 +120,21 @@ class BoardRequestsTest(unittest.TestCase):
         self.assertIn("- `r-4` P1 doing · Bo: fix the export · STALE", text)
         self.assertEqual(ev["request:r-4:stale:1000"],
                          "request r-4 P1 stale (doing, owner node-a/t3) Bo: fix the export")
+
+
+class RenderRequestsTest(unittest.TestCase):
+    def test_terminal_board_and_page_show_requests(self):
+        import board
+        r = {"id": "r-4", "priority": "P1", "status": "doing", "who": "Bo", "title": "fix the export",
+             "owner": None, "updated": 1000.0, "stale": True, "overdue": False}
+        b = {"epics": [], "agents": [], "decisions": [], "interrupts": [], "requests": [r]}
+        text = board.render(b, False)
+        self.assertIn("REQUESTS", text)
+        self.assertIn("r-4", text)
+        self.assertIn("STALE", text)
+        self.assertNotIn("REQUESTS", board.render({**b, "requests": []}, False))
+        page = (ROOT / "board/board_page.html").read_text()
+        self.assertIn("requestRow", page)
 
 
 if __name__ == "__main__":

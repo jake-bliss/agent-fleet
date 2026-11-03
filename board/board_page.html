@@ -380,6 +380,13 @@ function interruptRow(i) {
     ${i.reason ? `<div class="sub">${esc(i.reason)}</div>` : ""}</div>`;
 }
 
+function requestRow(r) {
+  const flags = ["stale", "overdue"].filter(f => r[f]).map(f => `<span class="tag red">${f}</span>`).join("");
+  return `<div class="nrow"><div class="nsum"><span class="tag amber">${esc(r.priority)}</span><span class="mono dim">${esc(r.id)}</span><span class="tag">${esc(r.status)}</span>
+    <span class="ttl">${esc(r.who)}: ${esc(r.title)}</span>${flags}${r.owner ? `<span class="dim">owner ${esc(r.owner)}</span>` : ""}${r.due ? `<span class="dim">due ${esc(r.due)}</span>` : ""}
+    ${safeUrl(r.link) ? `<span class="rb"><a href="${esc(safeUrl(r.link))}" target="_blank">Open source</a></span>` : ""}</div></div>`;
+}
+
 function clearedRow(c) {
   return `<div class="nrow"><div class="nsum"><span class="tag green">cleared</span><span class="mono dim">${esc(c.source)}</span><span class="tag">${esc(c.acked_by)}</span>
     <span class="ttl">${esc(c.title)}</span><span class="dim">${ago(c.acked_at)} ago</span>
@@ -545,6 +552,7 @@ function render(b) {
     + (cleared.length ? `<details ${dk("cleared")}><summary>${cleared.length} cleared without you</summary>${cleared.map(clearedRow).join("")}</details>` : "")
     + (sleeping.length ? `<details ${dk("snoozed")}><summary>${sleeping.length} snoozed</summary>${sleeping.map(([k, h]) =>
         `<div class="actions"><span class="amber">snoozed until ${untilS(snz[k])}</span><button class="ghost" data-snooze="${esc(k)}" data-for="off">Unsnooze</button></div>${h}`).join("")}</details>` : "")
+    + ((b.requests || []).length ? `<details ${dk("requests")} open><summary>Requests <span class="n">${b.requests.length}</span></summary>${b.requests.map(requestRow).join("")}</details>` : "")
     + (bg.length ? `<div class="dim" style="font-size:13px;margin-top:8px">Waiting on their own background agents: ${bg.map(a => esc(a.pane)).join(", ")}.</div>` : "")
     + (autos.length ? `<details ${dk("autoapplied")}><summary>Auto-applied (24h) <span class="n">${autos.length}</span></summary>${autos.map(autoRow).join("")}</details>` : "")
     + (answered.length ? `<details ${dk("answered")}><summary>${answered.length} answered in the last 24h</summary>${answered.map(decisionRow).join("")}</details>` : "");

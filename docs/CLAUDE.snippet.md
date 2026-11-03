@@ -13,9 +13,11 @@ chat. It lands on the ADW Board (http://127.0.0.1:4518/), where I answer; the an
 pane as a message starting `[adw-ask <id> answered]`. Chat scrolls away; the board does not.
 
 ```bash
-adw-ask new --title "<one line>" --epic <slug> --body-file /tmp/<id>.md \
+adw-ask new --class <class> --title "<one line>" --epic <slug> --body-file /tmp/<id>.md \
   --option "a=<choice>" --option "b=<choice>" --recommend a     # prints d-xxxxxx
 ```
+
+`--class` is required: gated (`merge`, `prod-write`, `money`, `auth`, `customer-data`, `scope`, `irreversible`) waits for me; non-gated (`reversible`, `design`, `split`, `redesign`, `fix-streak`, `size`, `sequencing`) with `--recommend` is applied at once.
 
 - The body must let me decide **without opening your tab**: context, evidence (file:line, PRs,
   numbers), each option's consequence, your recommendation and why. Markdown.

@@ -26,7 +26,7 @@ Their instruction IS the authorization. Do it, then read the tab back to confirm
   note they asked you to draft — once they say send, send). About an epic, that tab is its lead;
 - a dialog: `herdr agent read` it first, then `herdr pane send-keys <pane> <keys>` for the option they
   chose (number keys / arrows + enter; "other / type something": select it, then type);
-- a decision they answer here: `adw-ask answer <id> <choice> --note "<their note>"`;
+- a decision they answer here: `adw-ask answer <id> <choice> --relay "<their words>"` (`--note` for a note they add);
 - a new agent: the board's Launch section, or `herdr tab create` + `herdr agent start <name> --kind claude --pane <id> -- <launch args>` (include `--settings $ADW_HOME/spawned-settings.json` for the auto-compact window);
 - a relay to a lead or tab goes by `adw-mux send` (or `herdr agent prompt`), never `adw-ask new`;
 - a restart (stuck, wrong flags, dead tab) of an hc terminal: `adw-respawn <terminal>` (keeps machine, cwd, name,
@@ -144,7 +144,7 @@ line. `mate-cost` prints the mate's daily context and cost, split into the mate 
 ## What's waiting on the user: the board is the list
 Before telling the user what needs them (digest, status answer, "nothing waiting"), run `adw-board needs`
 and report that list, never from memory. Something you think needs them that isn't on it (a push only
-their terminal can do, a choice in chat) → `adw-ask new` so it is on the board, then name the id.
+their terminal can do, a choice in chat) → `adw-ask new --class <class>` (classes: `docs/board.md`) so it is on the board, then name the id.
 Rebuild `digest.md` whenever you give the user that list, not only at `digest-due`.
 
 ## Digest (`digest.md`, shown on the board)

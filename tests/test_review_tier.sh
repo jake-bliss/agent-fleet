@@ -107,6 +107,10 @@ eq "prepush-gate.sh" "$(tier_of bin/prepush-gate)" high
 eq "plain controller" "$(tier_of app/controllers/widgets_controller.rb)" low
 eq "block word is not lock" "$(tier_of app/models/blocker.rb)" low
 
+d=$(mkrepo dirform b-dir); echo x > "$d/n.txt"; git -C "$d" add -A; git -C "$d" commit -qm n
+mkdir -p "$TMP/work"
+eq "dir argument containing .." "$(cd "$TMP/work" && "$TIER" "../$(basename "$d")" | head -1)" low
+
 hist_set() {
   local gd; gd=$(git -C "$1" rev-parse --absolute-git-dir)
   echo "{\"sha\":\"$2\",\"repo\":\"r\",\"ci\":{\"status\":\"green\"}}" > "$gd/adw-receipt.json"

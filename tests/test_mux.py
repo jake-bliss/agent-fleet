@@ -52,7 +52,7 @@ class TestIds(unittest.TestCase):
             self.assertTrue(asks.mux.valid(p), p)
             self.assertTrue(board.PANE_ID.fullmatch(p), p)
             self.assertTrue(board.PIN_KEY.fullmatch("p:" + p), p)
-        for p in ("", "t", "x7", "w1:p3", "dell/w1:p3", "t7;rm", "a b/t7"):
+        for p in ("", "t", "x7", "w1:p3", "node-b/w1:p3", "t7;rm", "a b/t7"):
             self.assertFalse(asks.mux.valid(p), p)
 
     def test_backend_of_id(self):
@@ -128,6 +128,7 @@ class TestSelfPrefix(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ADW_HC_MACHINE": "node-a"}):
             self.assertEqual(self.run_hc("get", "node-a/t3"), ("get", "t3"))
             self.assertEqual(self.run_hc("send", "node-a/t3", "x"), ("send", "t3", "x"))
+            self.assertEqual(self.run_hc("rm", "node-a/t3"), ("rm", "t3"))
             self.assertEqual(self.run_hc("get", "node-b/t3"), ("get", "node-b/t3"))
             self.assertEqual(self.run_hc("ls", "--json"), ("ls", "--json"))
         self.assertEqual(self.run_hc("get", "node-a/t3"), ("get", "node-a/t3"))

@@ -6,7 +6,7 @@ if [ -f "$ADW_HOME/board/reqs.py" ]; then
   exec python3 "$ADW_HOME/board/reqs.py" "$@"
 fi
 [ -n "${ADW_HUB:-}" ] || { echo "req: no $ADW_HOME/board/reqs.py here; set ADW_HUB=user@host to use the hub's queue" >&2; exit 1; }
-remote="export PATH=\$HOME/.local/bin:\$PATH; ADW_REQ_BY=$(printf %s "${ADW_REQ_BY:-${HC_TERMINAL_ID:-cli}}" | sed "s/'//g") exec python3 ~/.claude/adw/board/reqs.py"
+remote="export PATH=\$HOME/.local/bin:\$PATH; ADW_REQ_BY='$(printf %s "${ADW_REQ_BY:-${HC_TERMINAL_ID:-cli}}" | sed "s/'//g")' exec python3 ~/.claude/adw/board/reqs.py"
 for a in "$@"; do
   remote="$remote '$(printf %s "$a" | sed "s/'/'\\\\''/g")'"
 done
