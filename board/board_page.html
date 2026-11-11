@@ -305,7 +305,7 @@ const untilS = t => new Date(t * 1000).toLocaleString([], { weekday: "short", ho
 
 const openD = {};
 const dk = (k, dflt) => `data-dk="${esc(k)}" ${(k in openD ? openD[k] : dflt) ? "open" : ""}`;
-document.addEventListener("toggle", e => { const k = e.target.dataset && e.target.dataset.dk; if (k) openD[k] = e.target.open; }, true);
+document.addEventListener("toggle", e => { const k = e.target.dataset && e.target.dataset.dk; if (k) openD[k] = e.target.open; const z = e.target.dataset && e.target.dataset.lazy; if (z && e.target.open && !fullDec[z]) loadFull(z); }, true);
 
 let needsPatchedAt = 0, armed = null;
 function disarm() {
@@ -351,7 +351,17 @@ function autoRow(d) {
       <div class="actions"><button class="go" data-reply="${esc(d.pane)}" data-draftkey="${esc(k)}" data-stid="ra-${esc(d.id)}">Send</button><span class="status" id="st-ra-${esc(d.id)}"></span></div>` : ""}</div>`;
 }
 
+const fullDec = {};
+async function loadFull(id) {
+  try {
+    const r = await fetch(`/api/decision?id=${encodeURIComponent(id)}`, { cache: "no-store" });
+    if (!r.ok) return;
+    fullDec[id] = await r.json();
+    last && (document.getElementById("needs").dataset.html = "", render(last));
+  } catch (e) {}
+
 function decisionRow(d) {
+  if (d.slim && fullDec[d.id]) d = { ...fullDec[d.id], delivered: d.delivered, undeliverable: d.undeliverable, delivery_error: d.delivery_error };
   const ans = d.answer, rec = (d.options || []).find(o => o.key === d.recommend);
   const opts = (d.options || []).map(o => `<button class="opt ${picks[d.id] === o.key ? "sel" : ""}" data-pick="${esc(d.id)}" data-key="${esc(o.key)}" ${ans ? "disabled" : ""}>
     <span class="k">${esc(o.key)}</span>${esc(o.label)}${d.recommend === o.key ? ' <span class="tag green">recommended</span>' : ""}</button>`).join("");
@@ -367,10 +377,10 @@ function decisionRow(d) {
       ${d.pane ? `<button class="ghost" data-focus="${esc(d.pane)}">Open tab ${esc(d.pane)}</button>` : ""}<span class="status" id="st-${esc(d.id)}"></span>${snoozeBtns("d:" + d.id)}</div>`;
   }
   const quick = !ans && rec && !/^ship /i.test(String(rec.label)) ? `<button class="go" data-quick="${esc(d.id)}" data-key="${esc(rec.key)}" title="${esc(rec.label)}">Answer ${esc(rec.key)}: ${esc(String(rec.label).slice(0, 44))}</button><span class="status" id="st-q-${esc(d.id)}"></span>` : "";
-  return `<details class="nrow ${ans ? "answered" : ""}" ${dk("d:" + d.id)}><summary><span class="tag ${ans ? "green" : "amber"}">${ans ? "answered" : "decision"}</span><span class="mono dim">${esc(d.id)}</span>
+  return `<details class="nrow ${ans ? "answered" : ""}" ${d.slim ? `data-lazy="${esc(d.id)}"` : ""} ${dk("d:" + d.id)}><summary><span class="tag ${ans ? "green" : "amber"}">${ans ? "answered" : "decision"}</span><span class="mono dim">${esc(d.id)}</span>
     ${d.epic ? `<span class="tag">${esc(d.epic)}</span>` : ""}<span class="ttl">${esc(d.title)}</span><span class="dim">${ago(d.created)} ago</span>${d.default_at ? `<span class="amber">goes with (${esc(d.recommend)}) in ${Math.max(0, Math.round((d.default_at - Date.now() / 1000) / 60))}m</span>` : ""}
     <span class="rb">${quick}</span></summary>
-    <div class="nbody"><div class="body">${mdBlock(d.body)}</div>${opts ? `<div class="opts">${opts}</div>` : ""}${foot}</div></details>`;
+    <div class="nbody"><div class="body">${d.slim ? '<span class="dim">loading…</span>' : mdBlock(d.body)}</div>${opts ? `<div class="opts">${opts}</div>` : ""}${foot}</div></details>`;
 }
 
 function interruptRow(i) {

@@ -118,7 +118,7 @@ PY
 reconcile|status|ready)
   [ -f "$GRAPH" ] || die "no epic '$EPIC' (run: adw-lead-state init $EPIC <repo-key> \"<goal>\")"
   MODE="$CMD" python3 - "$GRAPH" "$MANIFEST" <<'PY'
-import json, os, subprocess, sys
+import glob, json, os, socket, subprocess, sys
 graph_path, manifest_path = sys.argv[1], sys.argv[2]
 mode = os.environ["MODE"]
 g = json.load(open(graph_path))
@@ -148,6 +148,55 @@ def pr_state(slug, pr):
         return {"OPEN": "pr-open", "CLOSED": "blocked", "MERGED": "merged"}.get(d.get("state"), "pr-open")
     except Exception:
         return None
+
+SLOT_DEFAULTS = {"max_in_flight": 12, "min_free_gb": 6, "max_lend": 2}
+
+def host_of(pane):
+    return pane.split("/", 1)[0] if "/" in pane else ""
+
+def mem_free_gb():
+    if os.environ.get("ADW_MEM_FREE_GB"):
+        return float(os.environ["ADW_MEM_FREE_GB"])
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / 1048576
+    except OSError:
+        pass
+    return None
+
+def spare_slots(epic_dir, mp, in_flight, budget):
+    """(slots this epic may borrow past max_parallel, why): idle host capacity left after other epics' unused budgets."""
+    host = os.environ.get("ADW_HOST") or socket.gethostname()
+    try:
+        cfg = json.load(open(os.path.join(os.path.dirname(os.path.dirname(epic_dir)), "slots.json")))
+    except (OSError, ValueError):
+        cfg = {}
+    c = {**SLOT_DEFAULTS, **(cfg.get("default") or {}), **(cfg.get(host) or {})}
+    free = mem_free_gb()
+    if free is None or free < c["min_free_gb"]:
+        return 0, f"{host}: {'no meminfo' if free is None else f'{free:.1f}G free'} < {c['min_free_gb']}G"
+    used = reserve = 0
+    for d in glob.glob(os.path.join(os.path.dirname(epic_dir), "*", "graph.json")):
+        ed = os.path.dirname(d)
+        if any(os.path.exists(os.path.join(ed, f)) for f in ("COMPLETE.json", "PAUSED.json")):
+            continue
+        try:
+            lead = json.load(open(os.path.join(ed, "lead.json")))
+            og = json.load(open(d))
+        except (OSError, ValueError):
+            continue
+        if host_of(lead.get("pane") or "") != host:
+            continue
+        osegs = og.get("segments") or []
+        fl = sum(1 for s in osegs if s.get("status") in ("building", "pr-open"))
+        used += fl
+        if os.path.realpath(ed) != os.path.realpath(epic_dir):
+            rd = sum(1 for s in osegs if s.get("status") == "ready")
+            reserve += min(rd, max(0, (og.get("max_parallel") or 0) - fl))
+    lent = max(0, in_flight - mp)
+    n = max(0, min(c["max_lend"] - lent, c["max_in_flight"] - used - reserve - budget))
+    return n, f"{host}: {used}/{c['max_in_flight']} in flight, {reserve} reserved for other epics, {free:.1f}G free"
 
 if mode == "reconcile":
     for s in segs:
@@ -192,7 +241,13 @@ if mode == "ready":
         sys.exit(0)
     in_flight = sum(1 for s in segs if s["status"] in ("building", "pr-open"))
     budget = max(0, g["max_parallel"] - in_flight)
-    ready = [s["id"] for s in segs if s["status"] == "ready"][:budget]
+    ready_all = [s["id"] for s in segs if s["status"] == "ready"]
+    lend = 0
+    if len(ready_all) > budget:
+        lend, why = spare_slots(epic_dir, g["max_parallel"], in_flight, budget)
+        lend = min(lend, len(ready_all) - budget)
+        print(f"# {lend} beyond max_parallel on spare host slots ({why})", file=sys.stderr)
+    ready = ready_all[:budget + lend]
     print(" ".join(ready))
     if not ready:
         print("# none dispatchable (budget full or nothing ready)", file=sys.stderr)

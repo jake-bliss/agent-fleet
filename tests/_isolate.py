@@ -18,3 +18,5 @@ os.environ["ADW_HOME"] = str(_dir / "home")
 os.environ["ADW_LOCK_DIR"] = str(_dir / "locks")
 os.environ["ADW_STATE_DIR"] = str(_dir / "state")
 os.environ["ADW_SESSIONS_DIR"] = str(_dir / "sessions")
+os.environ["AW_LEAD_ENROLL"] = "/bin/true"
+os.environ["ADW_DESK_TZ"] = "America/New_York"

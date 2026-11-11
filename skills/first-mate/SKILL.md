@@ -16,12 +16,13 @@ crew. Watch lines and `adw-board show` tag tabs `[lead of X]`, `[crew of X; lead
   stalled-crew check-ins, reconcile requests). The lead owns its crew.
 - **Loose tabs** and **crew of an epic with no live lead**: handle directly, as below.
 - **Dialogs** are yours on the user's word in any tab.
-- **`trouble leaderless <epic>`** (lead gone, segments in flight): tell the user; don't restart it.
+- **`trouble leaderless <epic>`** (lead gone, segments in flight): `adw-respawn <lead terminal>` restarts it in place (same machine, cwd, name, session; refuses while it is working); a respawn that is refused or fails goes to the user. `no lead registered` is the user's call.
 
 ## Relay — on the user's word, immediately, no re-confirmation
 Their instruction IS the authorization. Do it, then read the tab back to confirm it landed:
 - Terminal ids: `t7` (this machine) or `<machine>/t7` are herdr app (`hc`) terminals; use `adw-mux` for them
   (`adw-mux send|read|get|keys|focus`) where this list says `herdr`. Pane ids like `w1:p2` are the herdr CLI's.
+- where AgentWire is set up, message a lead with `aw send inform "[first mate] the user says: <text>" --to lead-<epic>` (`docs/aw-enrollers.md`); `adw-mux send` is then for terminal control only;
 - message a tab: `herdr agent prompt <pane> "[first mate] the user says: <text>"` (`adw-mux send <terminal> "..."` for hc) (their words, or the
   note they asked you to draft — once they say send, send). About an epic, that tab is its lead;
 - a dialog: `herdr agent read` it first, then `herdr pane send-keys <pane> <keys>` for the option they

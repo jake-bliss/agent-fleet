@@ -30,6 +30,10 @@ Worktrees isolate files, not the database. If every worktree points at one local
 
 Treat a shared development Postgres as disposable: it is acceptable to run it with durability settings turned off for speed, as long as nothing in it cannot be regenerated from migrations and seeds.
 
+## Stash is shared
+
+`git stash` keeps one `refs/stash` per repository, shared by every worktree. Two tabs stashing at once pop each other's work. Commit WIP to the branch instead; if you must stash, use `git stash push -m <branch>` and apply it by that name, never a bare `git stash pop`.
+
 ## Pruning
 
 Worktrees accumulate: one per task adds up to dozens within weeks, each with its test databases. Prune on a schedule (weekly is enough):
@@ -39,4 +43,4 @@ prune-worktrees ~/projects/web-app            # dry run: lists what would go
 prune-worktrees ~/projects/web-app --apply
 ```
 
-It removes a worktree only when its branch has a merged or closed PR (asked of GitHub through `gh`, since squash-merged branches look unmerged to `git branch --merged`) and the tree is clean. It never uses `--force`, so a worktree with uncommitted work refuses and survives, and it never touches the primary checkout, detached worktrees, branches with an open PR, or branches with no PR at all (unpushed work). Drop orphaned per-worktree test databases on the same schedule, matching your naming convention. Run both from launchd or cron.
+It removes a worktree only when its branch has a merged or closed PR (asked of GitHub through `gh`, since squash-merged branches look unmerged to `git branch --merged`) and the tree is clean. It never uses `--force`, so a worktree with uncommitted work refuses and survives, and it never touches the primary checkout, detached worktrees, branches with an open PR, branches with no PR at all (unpushed work), a worktree a running process has as its cwd (a live session), or one whose HEAD holds commits the finished PR's head does not contain. `dev-cleanup` runs it over every repo in `ADW_CLEANUP_REPOS`. Drop orphaned per-worktree test databases on the same schedule, matching your naming convention. Run both from launchd or cron.

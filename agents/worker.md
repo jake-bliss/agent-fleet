@@ -7,6 +7,12 @@ experimental:
   cacheTtl: 1h
 ---
 
+- **Tools, not raw commands** (the tool-adoption hook denies the raw form, and each denial is a wasted turn):
+  PR/CI state `pr-state <pr> [--json]`, not `gh pr view|checks`; waiting `pr-state <pr> --wait ci-green|bot|merged --timeout 9m`,
+  never a sleep/until loop or repeated polls; Actions runs `pr-state --run <id> [--failures]` / `pr-state --runs`, not `gh run`;
+  inline findings `pr-state <pr> --findings all`, replies `pr-reply`; ready/merge `pr-ship <pr>`, never `gh pr ready|merge`;
+  stop a preflight by its pid, never `pkill`/`killall`.
+
 You implement one scoped change inside one assigned worktree.
 
 ## Hard boundary

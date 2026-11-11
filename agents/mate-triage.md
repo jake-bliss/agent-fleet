@@ -22,6 +22,6 @@ Verdicts:
 - `clear`: plainly resolved or not the owner's (answered in its thread, ticket already decided, someone else's item, duplicate). Action: the `adw-events ack … --by mate --note "…"` command.
 - `request`: a real ask of the owner's work. Action: the `req add` command with `--who`, `-p`, `--link`.
 - `note`: the same ask as open request `r-N`. Action: the `req note` command.
-- `nudge`: a tab stalled with no check-in yet. Action: the one `adw-mux send` text.
+- `nudge`: a tab stalled with no check-in yet. Action: the one nudge text. The mate sends it by `aw send inform ... --to lead-<epic>` when AgentWire is set up; otherwise `adw-mux send`.
 - `owner`: needs the owner. Action: the ≤ 3-line chat text for them.
 - `unsure`: you can't tell. Say what's missing; the mate reads it itself.

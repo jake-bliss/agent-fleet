@@ -142,8 +142,11 @@ def agent_info(pane):
             "session": (a.get("agent_session") or {}).get("value")}
 
 
-def prompt(pane, text):
-    return mux.prompt(pane, text) if mux.is_hc(pane) else herdr("agent", "prompt", pane, text)
+def prompt(pane, text, guard=None):
+    if mux.is_hc(pane):
+        return mux.prompt(pane, text, guard=guard)
+    refused = guard() if guard else None
+    return (None, refused) if refused else herdr("agent", "prompt", pane, text)
 
 
 def read_pane(pane, lines=200):
@@ -186,14 +189,21 @@ def list_agents():
 GATED = ("merge", "prod-write", "money", "auth", "customer-data", "scope", "irreversible")
 NON_GATED = ("reversible", "design", "split", "redesign", "fix-streak", "size", "sequencing")
 PR_SHAPE_CLASSES = ("size", "split")
-GATE_SCAN = re.compile(r"ship \S+#\d+|\bship\b|pr-ship|\bland\b|squash|publish|release|\bdrop\b|merge|\bmerg|prod|deploy|delete|drop |refund|price|pricing|charge|credential|secret|token|migrat|rollback", re.I)
-GATE_SCAN_NO_PR_SHAPE = re.compile(r"publish|release|\bdrop\b|prod|deploy|delete|drop |refund|price|pricing|charge|credential|secret|token|migrat|rollback", re.I)
+_DANGER = (r"publish|release|\bdrop\b|prod|deploy|delete|drop |refund|price|pricing|charge|credential|secret|token|migrat|rollback"
+           r"|payout|api[- ]?key|password|purge|wipe|truncat|tear[- ]?down|void(?:ing)? invoice|issu(?:e|ing) credit"
+           r"|admin access|disabl(?:e|ing) mfa")
+GATE_SCAN = re.compile(r"ship \S+#\d+|\bship\b|pr-ship|\bland\b|squash|merge|\bmerg|" + _DANGER, re.I)
+PR_MERGE_TOKEN = re.compile(r"\bship\s+\S*#\d+|pr-ship", re.I)
+GATE_SCAN_NO_PR_SHAPE = re.compile(_DANGER, re.I)
 SHIP_TOKEN = re.compile(r"ship \S+#\d+@[0-9a-f]+", re.I)
 
 
 def gate_hit(d):
-    texts = [d.get("title"), d.get("body"), d.get("relay"), (d.get("answer") or {}).get("relay"),
-             *(t for o in d.get("options") or [] for t in (o.get("key"), o.get("label")))]
+    opts = [t for o in d.get("options") or [] for t in (o.get("key"), o.get("label"))]
+    if d.get("class") in NON_GATED:
+        texts = [d.get("title"), *opts]
+    else:
+        texts = [d.get("title"), d.get("body"), d.get("relay"), (d.get("answer") or {}).get("relay"), *opts]
     relaxed = d.get("class") in PR_SHAPE_CLASSES
     for t in texts:
         m = (SHIP_TOKEN.search(t or "") or GATE_SCAN_NO_PR_SHAPE.search(t or "")) if relaxed else GATE_SCAN.search(t or "")
@@ -292,6 +302,10 @@ def deliver(d):
         d["delivery_error"] = f"sent {MAX_ATTEMPTS} times but never seen in the agent's tab; answer kept in the record"
         return merge_delivery(d)
     info = agent_info(d["pane"])
+    if d.get("session") and (info is None or info["session"] != d["session"]):
+        moved = relocate(d)
+        if moved:
+            d, info = moved, agent_info(moved["pane"])
     if info is None or (d.get("session") and info["session"] != d["session"]):
         d["undeliverable"] = True
         d["delivery_error"] = "the asking agent no longer occupies its pane; answer kept in the record"
@@ -321,6 +335,15 @@ def deliver(d):
             else:
                 d["delivery_error"] = "sent; waiting to see it in the agent's tab"
     return merge_delivery(d)
+
+
+def relocate(d):
+    """Follows the asking session to the pane it occupies now; returns the moved record or None."""
+    new = mux.terminal_for_session(d.get("session")) if d.get("session") else None
+    new = pane_ref(new) if new else None
+    if not new or new == d["pane"] or not migrate_pane(d["pane"], new, d["session"]):
+        return None
+    return load(d["id"])
 
 
 def migrate_pane(old, new, session):
@@ -380,6 +403,35 @@ def record_answer(i, choice, note="", by="human", relay=None):
     return deliver(d)
 
 
+SHIP_LABEL = re.compile(r"^ship\s+([A-Za-z0-9._-]+)#([1-9]\d*)@[0-9a-f]{7,40}", re.I)
+def ship_repos():
+    """{short repo name: owner/repo} for the repos in pr-tools.json, the names a `ship <repo>#<n>@<sha>` label uses."""
+    path = os.environ.get("PR_TOOLS_CONFIG") or str(ADW_HOME / "pr-tools.json")
+    try:
+        repos = (json.loads(Path(path).read_text()).get("repos") or {}).keys()
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {r.split("/", 1)[1].lower(): r for r in repos if "/" in r}
+
+
+def ships_without_ask(options):
+    """Returns the pr-ship dry-run line when plain pr-ship would act on the PR in a ship option, else None. Any error fails open."""
+    for o in options:
+        m = SHIP_LABEL.match((o.get("label") or "").strip())
+        repo = m and ship_repos().get(m.group(1).lower())
+        exe = shutil.which("pr-ship")
+        if not repo or not exe:
+            continue
+        try:
+            r = subprocess.run([exe, m.group(2), "-R", repo, "--dry-run"], capture_output=True, text=True, timeout=90)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        line = (r.stdout.strip().splitlines() or [""])[-1]
+        if r.returncode == 0 and " dry-run: would " in line:
+            return line
+    return None
+
+
 def body_hash(body):
     return hashlib.sha1((body or "").encode()).hexdigest()
 
@@ -408,6 +460,13 @@ def cmd_new(a):
         raise SystemExit(f"--class is required; gated (the human decides): {', '.join(GATED)}; non-gated (auto-applied with --recommend): {', '.join(NON_GATED)}")
     if cls not in GATED + NON_GATED:
         raise SystemExit(f"unknown --class {a.cls!r}; one of: {', '.join(GATED + NON_GATED)}")
+    if cls in NON_GATED and cls not in PR_SHAPE_CLASSES:
+        hit = next((m.group(0) for t in [a.title, *(o["label"] for o in options)] if (m := PR_MERGE_TOKEN.search(t or ""))), None)
+        if hit:
+            raise SystemExit(f"a {cls} ask can't carry a PR merge ({hit!r}): it would wait for the human instead of applying. "
+                             "Ask only the fix/design choice here; the merge goes through `pr-ship` (or a separate --class merge ask if it refuses).")
+    if cls == "merge" and (line := ships_without_ask(options)):
+        raise SystemExit(f"no ask needed: plain pr-ship acts on this PR ({line}). Run `pr-ship <pr>`; file an ask only when it refuses or waits for the human.")
     pane = own_pane()
     d = {"id": "d-" + secrets.token_hex(3), "created": now(), "status": "open",
          "title": a.title, "epic": a.epic, "body": body, "options": options, "class": cls,
@@ -443,6 +502,9 @@ def cmd_new(a):
     print(d["id"])
     if not pane:
         print("warning: not in a terminal pane; the answer can only be read with `adw-ask wait`", file=sys.stderr)
+    if cls in NON_GATED and a.recommend and why:
+        print(f"note: stays open for the human because the title or an option mentions {why.split(chr(39))[1]!r}; "
+              f"reword it to be auto-applied (default-after cannot override this scan)", file=sys.stderr)
     if cls in NON_GATED and a.recommend and not why:
         try:
             record_answer(d["id"], a.recommend, "", by="auto")

@@ -8,7 +8,9 @@ Safety:
   - never uses --force, so a worktree with uncommitted or untracked work refuses and survives
   - never touches the main checkout, detached worktrees, or branches with an OPEN PR
   - never touches a branch with NO PR at all (that is unpushed work)
-  - dry-run by default; pass --apply to remove
+  - never touches a worktree a running process has as its cwd (a live session)
+  - never touches a worktree whose HEAD has commits the finished PR's head does not contain
+  - dry-run by default; pass --apply to actually remove
 
 Usage: prune-worktrees <repo-path> [--apply]
 """
@@ -22,14 +24,12 @@ def sh(args, **kw):
     return subprocess.run(args, capture_output=True, text=True, **kw)
 
 
-def pr_branches(repo, state, only=None):
-    """Head branch names for PRs in `state`."""
+def pr_rows(repo, state):
     out = sh(["gh", "pr", "list", "--state", state, "--limit", "1000",
-              "--json", "headRefName,state"], cwd=repo)
+              "--json", "headRefName,state,headRefOid,number"], cwd=repo)
     if out.returncode != 0:
         sys.exit(f"prune-worktrees: gh failed for state={state}: {out.stderr.strip()}")
-    rows = json.loads(out.stdout or "[]")
-    return {r["headRefName"] for r in rows if only is None or r["state"] == only}
+    return json.loads(out.stdout or "[]")
 
 
 def worktrees(repo):
@@ -47,6 +47,49 @@ def worktrees(repo):
     return entries
 
 
+def process_cwds():
+    cwds = set()
+    if os.path.isdir("/proc/self"):
+        for pid in os.listdir("/proc"):
+            if pid.isdigit():
+                try:
+                    cwds.add(os.path.realpath(os.readlink(f"/proc/{pid}/cwd")))
+                except OSError:
+                    pass
+    else:
+        out = sh(["lsof", "-a", "-d", "cwd", "-F", "n"])
+        if not out.stdout:
+            sys.exit("prune-worktrees: lsof returned nothing; cannot tell which worktrees are in use")
+        cwds = {os.path.realpath(l[1:]) for l in out.stdout.splitlines() if l.startswith("n/")}
+    return cwds
+
+
+def in_use(path, cwds):
+    real = os.path.realpath(path)
+    return any(c == real or c.startswith(real + os.sep) for c in cwds)
+
+
+def contained_in_pr(path, prs):
+    """True when every commit on HEAD is already in one of the finished PRs' heads."""
+    head = sh(["git", "rev-parse", "HEAD"], cwd=path).stdout.strip()
+    if not head:
+        return False
+    for pr in prs:
+        oid = pr.get("headRefOid")
+        if not oid:
+            continue
+        if head == oid:
+            return True
+        if sh(["git", "cat-file", "-e", f"{oid}^{{commit}}"], cwd=path).returncode != 0:
+            try:
+                sh(["git", "fetch", "-q", "origin", f"refs/pull/{pr['number']}/head"], cwd=path, timeout=120)
+            except subprocess.TimeoutExpired:
+                continue
+        if sh(["git", "merge-base", "--is-ancestor", head, oid], cwd=path).returncode == 0:
+            return True
+    return False
+
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
         print(__doc__)
@@ -62,38 +105,48 @@ def main():
 
     print(f"prune-worktrees: repo={repo}")
     print("prune-worktrees: fetching PR state (open/merged/closed)...")
-    open_b = pr_branches(repo, "open")
-    merged_b = pr_branches(repo, "merged")
-    closed_b = pr_branches(repo, "closed", only="CLOSED")
+    open_b = {r["headRefName"] for r in pr_rows(repo, "open")}
+    merged = pr_rows(repo, "merged")
+    finished = {}
+    for r in merged + [r for r in pr_rows(repo, "closed") if r["state"] == "CLOSED"]:
+        finished.setdefault(r["headRefName"], []).append(r)
 
-    capped = len(merged_b) >= 1000
-    resolved_cache = {}
+    # gh caps at 1000; anything unresolved gets a per-branch lookup rather than a guess.
+    capped = len(merged) >= 1000
 
-    def has_finished_pr(branch):
-        if branch in merged_b or branch in closed_b:
-            return True
-        if branch in open_b:
-            return False
-        if not capped:
-            return False
-        if branch not in resolved_cache:
-            out = sh(["gh", "pr", "list", "--head", branch, "--state", "all",
-                      "--limit", "5", "--json", "state"], cwd=repo)
-            states = {r["state"] for r in json.loads(out.stdout or "[]")}
-            resolved_cache[branch] = bool(states & {"MERGED", "CLOSED"}) and "OPEN" not in states
-        return resolved_cache[branch]
+    def finished_prs(branch):
+        if branch in finished:
+            return finished[branch]
+        if branch in open_b or not capped:
+            return []
+        out = sh(["gh", "pr", "list", "--head", branch, "--state", "all", "--limit", "5",
+                  "--json", "headRefName,state,headRefOid,number"], cwd=repo)
+        rows = json.loads(out.stdout or "[]")
+        if any(r["state"] == "OPEN" for r in rows):
+            return []
+        return [r for r in rows if r["state"] in ("MERGED", "CLOSED")]
 
-    removed = dirty = kept = no_pr = 0
+    cwds = process_cwds()
+    removed = dirty = kept = no_pr = busy = ahead = 0
     for wt in worktrees(repo):
         path, branch = wt["path"], wt["branch"]
-        if path == main_checkout or not branch:
+        if path == main_checkout or not branch or branch in open_b:
             kept += 1
             continue
-        if branch in open_b:
+        if not os.path.isdir(path):
             kept += 1
             continue
-        if not has_finished_pr(branch):
+        prs = finished_prs(branch)
+        if not prs:
             no_pr += 1
+            continue
+        if in_use(path, cwds):
+            busy += 1
+            print(f"  IN USE, kept: {path}")
+            continue
+        if not contained_in_pr(path, prs):
+            ahead += 1
+            print(f"  LOCAL COMMITS, kept: {path}")
             continue
         if not apply:
             print(f"  would remove: {path}  ({branch})")
@@ -108,8 +161,8 @@ def main():
     if apply:
         sh(["git", "worktree", "prune"], cwd=repo)
 
-    print(f"\nprune-worktrees: removed={removed} dirty-kept={dirty} "
-          f"open-or-main={kept} no-PR-kept={no_pr}")
+    print(f"\nprune-worktrees: removed={removed} dirty-kept={dirty} in-use-kept={busy} "
+          f"local-commits-kept={ahead} open-or-main={kept} no-PR-kept={no_pr}")
     if not apply:
         print("prune-worktrees: DRY RUN — re-run with --apply to execute")
 

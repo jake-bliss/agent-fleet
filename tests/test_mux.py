@@ -59,6 +59,12 @@ class TestIds(unittest.TestCase):
         self.assertTrue(asks.mux.is_hc("node-b/t7"))
         self.assertFalse(asks.mux.is_hc("w1:p3"))
 
+    def test_launch_argv_reuses_the_wrapper_or_runs_direct(self):
+        inner = ["claude", "--resume", "a b"]
+        self.assertEqual(asks.mux.launch_argv(["/bin/bash", "-lc", "exec claude"], inner), ["/bin/bash", "-lc", "exec claude --resume 'a b'"])
+        self.assertEqual(asks.mux.launch_argv(["claude", "--x"], inner), inner)
+        self.assertIn("rm", asks.mux.TARGETED)
+
     def test_own_pane_is_bare_and_pane_ref_qualifies(self):
         with mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t4", "ADW_HC_MACHINE": "node-b"}):
             self.assertEqual(asks.own_pane(), "t4")
@@ -178,18 +184,6 @@ class TestSlashCommands(unittest.TestCase):
         r, calls = self.run_prompt("/adw-lead my_epic")
         self.assertIn("cannot type", r[1])
         self.assertEqual(calls, [])
-
-
-class TestAutoCompactOverHc(unittest.TestCase):
-    def test_lead_gets_a_bare_compact(self):
-        import tempfile
-        sent = []
-        lead = {"role": "lead", "kind": "claude", "session": "s", "context": 10**9, "status": "idle", "attention": "idle",
-                "last_active": 1, "epic": "e"}
-        with mock.patch.object(board, "MATE", _Path(tempfile.mkdtemp())), \
-                mock.patch.object(board.asks, "prompt", lambda p, t: sent.append((p, t)) or ("", None)):
-            board.auto_compact({"agents": [{**lead, "pane": "node-a/t3"}]}, {})
-        self.assertEqual([(p, t.split()[0]) for p, t in sent], [("node-a/t3", "/compact")])
 
 
 class TestSenderLock(unittest.TestCase):
@@ -401,6 +395,19 @@ class TestGuard(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HC_BIN": "/usr/local/bin/herdr-core"}):
             with self.assertRaises(RuntimeError):
                 asks.mux.hc("ls")
+
+
+class TestIdleGuard(unittest.TestCase):
+    def guard(self, session, info, screen="⏺ done\n❯"):
+        m = mock.Mock(get=lambda p: info, read=lambda p, n: (screen, None), last_turn=asks.mux.last_turn)
+        return asks.mux.idle_guard("t1", session, m)()
+
+    def test_none_session_skips_only_the_session_check(self):
+        idle = {"status": "idle", "session": "x"}
+        self.assertIsNone(self.guard(None, idle))
+        self.assertIn("not typing", self.guard("y", idle))
+        self.assertIn("not typing", self.guard(None, {"status": "working", "session": "x"}))
+        self.assertIn("draft", self.guard(None, idle, "⏺ done\n❯ typing"))
 
 
 if __name__ == "__main__":

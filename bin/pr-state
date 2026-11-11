@@ -61,7 +61,7 @@ DEPLOY_NAME = re.compile(r"deploy|release|publish|gke|cloud ?run", re.I)
 SETTLE_SECONDS = 60
 
 PR_FIELDS = """
-id number title author{login} state isDraft merged url mergeCommit{oid} headRefOid headRefName baseRefName mergeStateStatus reviewDecision
+id number title body author{login} state isDraft merged url mergeCommit{oid} headRefOid headRefName baseRefName additions deletions mergeStateStatus reviewDecision
 commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){
   pageInfo{hasNextPage endCursor}
   nodes{__typename
@@ -344,8 +344,9 @@ def build(repo, number, runs=False):
     open_threads = sum(1 for t in conns["reviewThreads"]["nodes"] if not t["isResolved"])
     merge_commit = (pr.get("mergeCommit") or {}).get("oid") if pr["merged"] else None
     return {
-        "repo": repo, "number": number, "title": pr["title"], "url": pr["url"], "state": state,
-        "draft": pr["isDraft"], "head": pr["headRefOid"],
+        "repo": repo, "number": number, "title": pr["title"], "body": pr.get("body") or "", "url": pr["url"], "state": state,
+        "draft": pr["isDraft"], "head": pr["headRefOid"], "branch": pr.get("headRefName"),
+        "size": (pr.get("additions") or 0) + (pr.get("deletions") or 0),
         "author": norm((pr.get("author") or {}).get("login")), "base": pr["baseRefName"],
         "default_branch": pr.get("_default_branch"), "changes_requested": changes_requested(pr.get("latestOpinionatedReviews")), "ci": ci, "bot": fp,
         "review_decision": pr["reviewDecision"], "merge_state": pr["mergeStateStatus"], "open_threads": open_threads,
@@ -481,7 +482,7 @@ def parse_duration(text):
 def emit(infos, as_json):
     if as_json:
         for info in infos:
-            print(json.dumps(info, ensure_ascii=False), flush=True)
+            print(json.dumps({k: v for k, v in info.items() if k != "body"}, ensure_ascii=False), flush=True)
     else:
         for info in infos:
             print(render(info), flush=True)
@@ -568,7 +569,7 @@ def clean_body(body, limit):
     return body if len(body) <= limit else body[:limit - 1] + "…"
 
 
-def print_findings(repo, number, mode, limit):
+def fetch_findings(repo, number):
     owner, name = repo.split("/", 1)
     pr = gh_graphql(FINDINGS_QUERY, {"owner": owner, "name": name, "number": number})["repository"]["pullRequest"]
     conn = pr["reviewThreads"]
@@ -584,6 +585,52 @@ def print_findings(repo, number, mode, limit):
     pr_author = norm((pr.get("author") or {}).get("login"))
     threads = [t for t in pr["reviewThreads"]["nodes"] if t["comments"]["nodes"]
                and norm((t["comments"]["nodes"][0].get("author") or {}).get("login")) != pr_author]
+    return pr_author, threads
+
+
+BLOCKING_SEVERITY = re.compile(r"\b(critical|high|important|warning|major|medium)\b", re.I)
+MINOR_SEVERITY = re.compile(r"\b(suggestion|nit|nitpick|minor|low|info|informational)\b", re.I)
+
+
+def finding_severity(body):
+    """'blocking' (Critical/Warning class), 'minor' (suggestion/nit), or None when the first line names no severity."""
+    first = re.sub(r"<!--.*?-->", "", body or "", flags=re.S).strip().split("\n")[0][:200]
+    hits = [(m.start(), kind) for kind, rx in (("blocking", BLOCKING_SEVERITY), ("minor", MINOR_SEVERITY))
+            for m in [rx.search(first)] if m]
+    return min(hits)[1] if hits else None
+
+
+CRITICAL_LEVEL = re.compile(r"\b(critical|high|important|major)\b", re.I)
+WARNING_LEVEL = re.compile(r"\b(warning|medium)\b", re.I)
+
+
+def finding_level(body):
+    """'warning' only when the first line names Warning/Medium and no Critical/High/Important/Major word, else None."""
+    first = re.sub(r"<!--.*?-->", "", body or "", flags=re.S).strip().split("\n")[0][:200]
+    return "warning" if WARNING_LEVEL.search(first) and not CRITICAL_LEVEL.search(first) else None
+
+
+def open_findings(repo, number, resolved_blocking=False):
+    """Unresolved inline findings: dicts with path, url, author, severity, replied (the PR author answered) and replies (their bodies).
+    resolved_blocking also returns resolved threads (outdated included) whose severity is not minor. original_commit is the sha the thread was opened on; created its ISO time."""
+    pr_author, threads = fetch_findings(repo, number)
+    out = []
+    for t in threads:
+        first = t["comments"]["nodes"][0]
+        if t["isResolved"] and not (resolved_blocking and finding_severity(first.get("body")) != "minor"):
+            continue
+        replies = [c.get("body") or "" for c in t["comments"]["nodes"][1:]
+                   if norm((c.get("author") or {}).get("login")) == pr_author]
+        out.append({"path": t["path"], "url": first.get("url"), "author": norm((first.get("author") or {}).get("login")),
+                    "severity": finding_severity(first.get("body")), "level": finding_level(first.get("body")), "replied": bool(replies), "replies": replies,
+                    "resolved": t["isResolved"], "original_commit": (first.get("originalCommit") or {}).get("oid"),
+                    "created": first.get("createdAt")})
+    return out
+
+
+def print_findings(repo, number, mode, limit):
+    name = repo.split("/", 1)[1]
+    pr_author, threads = fetch_findings(repo, number)
     shown = [t for t in threads if mode == "all" or not t["isResolved"]]
     print(f"{name}#{number} findings: {len(shown)} shown · {sum(not t['isResolved'] for t in threads)} open · "
           f"{sum(t['isResolved'] for t in threads)} resolved")

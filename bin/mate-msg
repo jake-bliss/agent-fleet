@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TIMEOUT="${MATE_MSG_TIMEOUT:-10}"
+RETRY_MS="${MATE_MSG_RETRY_MS:-200}"
+MAX_ATTEMPTS=4
+MAX_BYTES=1024
+
+usage() {
+  cat <<'U'
+Usage: mate-msg [--to HANDLE] [--dry-run] ("text" | -f FILE)
+
+Send a message to the first-mate through the agentwire server
+(POST $AW_URL/v1/messages/send, exactly-once via one idempotency key per run).
+  -f FILE     read the message from FILE
+  --to H      recipient agent handle (env ORCH_MATE_TO, default first-mate)
+  --dry-run   print handle, key and byte count; send nothing
+Config: env AW_URL / AW_TOKEN, else ~/.config/aw/config (KEY=VALUE lines).
+Text limit 1024 bytes: put longer text in a file with hc put and send the path.
+Exit: 0 sent, 1 failed (server unreachable before submission, or unconfirmed
+after retries), 2 usage / text too long. There is no other delivery path.
+U
+}
+
+die() { echo "mate-msg: $*" >&2; exit 1; }
+
+to="${ORCH_MATE_TO:-first-mate}"
+dry=0 file="" text="" have_text=0
+while (($#)); do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --dry-run) dry=1 ;;
+    --to) (($# >= 2)) || { echo "mate-msg: --to needs a value" >&2; exit 2; }; to="$2"; shift ;;
+    -f) (($# >= 2)) || { echo "mate-msg: -f needs FILE" >&2; exit 2; }; file="$2"; shift ;;
+    -*) echo "mate-msg: unknown flag: $1" >&2; exit 2 ;;
+    *) ((have_text == 0)) || { echo "mate-msg: only one text argument allowed" >&2; exit 2; }; text="$1"; have_text=1 ;;
+  esac
+  shift
+done
+
+if [[ -n "$file" ]]; then
+  [[ -r "$file" ]] || { echo "mate-msg: cannot read $file" >&2; exit 2; }
+  text="$(cat "$file")"
+elif ((!have_text)); then
+  usage >&2; exit 2
+fi
+[[ -n "$text" ]] || { echo "mate-msg: empty message" >&2; exit 2; }
+bytes="$(printf '%s' "$text" | wc -c | tr -d ' ')"
+if ((bytes > MAX_BYTES)); then
+  echo "mate-msg: text too long ($MAX_BYTES bytes max): put it in a file with hc put and send the path" >&2
+  exit 2
+fi
+
+key="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+key="$(printf '%s' "$key" | tr 'A-Z' 'a-z')"
+
+if ((dry)); then
+  printf 'would send to %s (%s bytes), key %s\n' "$to" "$bytes" "$key"
+  exit 0
+fi
+
+AW_URL="${AW_URL:-}" AW_TOKEN="${AW_TOKEN:-}"
+cfg="${AW_CONFIG:-$HOME/.config/aw/config}"
+if [[ ( -z "$AW_URL" || -z "$AW_TOKEN" ) && -r "$cfg" ]]; then
+  trim() { local x="$1"; x="${x#"${x%%[![:space:]]*}"}"; printf '%s' "${x%"${x##*[![:space:]]}"}"; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="$(trim "$line")"
+    [[ "$line" == \#* || "$line" != *=* || "$line" == =* ]] && continue
+    k="$(trim "${line%%=*}")" v="$(trim "${line#*=}")"
+    v="${v%\"}"; v="${v#\"}"
+    case "$k" in
+      AW_URL) [[ -n "$AW_URL" ]] || AW_URL="$v" ;;
+      AW_TOKEN) [[ -n "$AW_TOKEN" ]] || AW_TOKEN="$v" ;;
+    esac
+  done <"$cfg"
+fi
+[[ -n "$AW_URL" && -n "$AW_TOKEN" ]] || die "AW_URL/AW_TOKEN not set and not found in $cfg"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/mate-msg.XXXXXX")"
+chmod 700 "$work"
+trap 'rm -rf "$work"' EXIT
+
+jq -n --arg to "$to" --arg text "$text" --arg key "$key" \
+  '{type:"inform",to_kind:"agent",to:$to,text:$text,refs:[],idempotency_key:$key}' >"$work/body"
+tok="${AW_TOKEN//\\/\\\\}"; tok="${tok//\"/\\\"}"
+url="${AW_URL%/}/v1/messages/send"
+
+attempt=0 delay_ms="$RETRY_MS" last="" ambiguous=0
+while :; do
+  attempt=$((attempt + 1))
+  rc=0
+  code="$(curl -sS -o "$work/resp" -w '%{http_code}' --max-time "$TIMEOUT" -X POST \
+    -H 'content-type: application/json' -H 'accept: application/json' \
+    --data-binary @"$work/body" -K - "$url" 2>"$work/err" <<<"header = \"authorization: Bearer $tok\"")" || rc=$?
+  if ((rc == 0)); then
+    case "$code" in
+      200) echo "sent to $to"; exit 0 ;;
+      5??) ambiguous=1; last="HTTP $code" ;;
+      *)
+        msg="$(jq -r '.error // .message // empty' "$work/resp" 2>/dev/null | head -n1 || true)"
+        [[ -n "$msg" ]] || msg="$(head -n1 "$work/resp" 2>/dev/null | cut -c1-200)"
+        die "HTTP $code: $msg" ;;
+    esac
+  else
+    case "$rc" in
+      5|6|7) ;;
+      *) ambiguous=1 ;;
+    esac
+    last="curl exit $rc: $(head -n1 "$work/err" | cut -c1-200)"
+  fi
+  if ((attempt >= MAX_ATTEMPTS)); then
+    ((ambiguous)) || die "server unreachable before submission: $last"
+    die "unconfirmed after $attempt attempts (key $key): $last"
+  fi
+  sleep "$(awk -v ms="$delay_ms" 'BEGIN{printf "%.3f", ms/1000}')"
+  delay_ms=$((delay_ms * 2))
+done

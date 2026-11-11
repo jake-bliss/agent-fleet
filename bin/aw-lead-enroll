@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# aw-lead-enroll [--retarget-only] <epic> <host>/<tab>: register or retarget agent lead-<epic> on AgentWire.
+# --retarget-only makes only the `agents target` call and never touches tokens.
+# Never fails the caller: every problem is one stderr warning and exit 0.
+set -uo pipefail
+
+warn() { echo "aw-lead-enroll: warning: $*" >&2; exit 0; }
+
+retarget_only=0
+if [[ "${1:-}" == --retarget-only ]]; then retarget_only=1; shift; fi
+[[ $# -eq 2 && "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -n "$2" ]] || { echo "Usage: aw-lead-enroll [--retarget-only] <epic> <host>/<tab>" >&2; exit 0; }
+epic="$1" target="$2"
+handle="lead-$epic"
+dir="$HOME/.config/aw"
+enroller="$dir/enroller"
+lead="$dir/lead-$epic"
+cache="$dir/lead-targets/$epic"
+
+command -v aw >/dev/null 2>&1 || warn "aw not installed; $handle not enrolled"
+command -v jq >/dev/null 2>&1 || warn "jq not installed; $handle not enrolled"
+[[ -f "$enroller" ]] || warn "no enroller at $enroller; $handle not enrolled"
+mode="$(stat -c %a "$enroller" 2>/dev/null || stat -f %Lp "$enroller" 2>/dev/null)"
+[[ "$mode" == 600 ]] || warn "$enroller must be mode 0600; $handle not enrolled"
+
+E_URL="" E_TOKEN="" E_CID="" E_CSEC=""
+trim() { local x="$1"; x="${x#"${x%%[![:space:]]*}"}"; printf '%s' "${x%"${x##*[![:space:]]}"}"; }
+while IFS= read -r line || [[ -n "$line" ]]; do
+  line="$(trim "$line")"
+  [[ "$line" == \#* || "$line" != *=* || "$line" == =* ]] && continue
+  k="$(trim "${line%%=*}")" v="$(trim "${line#*=}")"
+  v="${v%\"}"; v="${v#\"}"
+  case "$k" in
+    AW_URL) E_URL="$v" ;;
+    AW_TOKEN) E_TOKEN="$v" ;;
+    AW_ACCESS_CLIENT_ID) E_CID="$v" ;;
+    AW_ACCESS_CLIENT_SECRET) E_CSEC="$v" ;;
+  esac
+done <"$enroller"
+[[ -n "$E_URL" && -n "$E_TOKEN" ]] || warn "enroller config lacks AW_URL/AW_TOKEN; $handle not enrolled"
+
+enroller_aw() {
+  (
+    export AW_URL="$E_URL" AW_TOKEN="$E_TOKEN"
+    [[ -z "$E_CID" ]] || export AW_ACCESS_CLIENT_ID="$E_CID"
+    [[ -z "$E_CSEC" ]] || export AW_ACCESS_CLIENT_SECRET="$E_CSEC"
+    exec timeout 8 aw "$@"
+  )
+}
+
+umask 077
+mkdir -p "$dir" && chmod 700 "$dir"
+
+write_atomic() { # file content
+  local tmp
+  mkdir -p "$(dirname "$1")" && chmod 700 "$(dirname "$1")" || return 1
+  tmp="$(mktemp "$1.XXXXXX")" || return 1
+  printf '%s' "$2" >"$tmp" && chmod 600 "$tmp" && mv -f "$tmp" "$1" || { rm -f "$tmp"; return 1; }
+}
+
+owned_by_fleet() {
+  local rows human
+  rows="$(enroller_aw admin agents list --json 2>/dev/null)" || return 1
+  human="$(jq -r --arg h "$handle" '[.agents[]? | select(.[0] == $h) | .[1]][0] // empty' <<<"$rows" 2>/dev/null)" || return 1
+  [[ "$human" == fleet ]]
+}
+
+if ((retarget_only)); then
+  owned_by_fleet || warn "$handle is not an agent of human fleet (or the list failed); not retargeted"
+  enroller_aw admin agents target "$handle" "$target" >/dev/null 2>&1 || warn "could not retarget $handle to $target"
+  [[ ! -s "$lead" ]] || write_atomic "$cache" "$target" || true
+  exit 0
+fi
+
+if [[ -s "$lead" ]]; then
+  [[ "$(cat "$cache" 2>/dev/null)" == "$target" ]] && exit 0
+  enroller_aw admin agents target "$handle" "$target" >/dev/null 2>&1 || warn "could not retarget $handle to $target"
+  write_atomic "$cache" "$target" || warn "could not write $cache"
+  exit 0
+fi
+
+if ! enroller_aw admin agents register fleet "$handle" --delivery hc-pane --target "$target" >/dev/null 2>&1; then
+  owned_by_fleet || warn "$handle exists and is not an agent of human fleet (or the list failed); not enrolled"
+fi
+enroller_aw admin agents delivery "$handle" hc-pane --target "$target" >/dev/null 2>&1 || warn "could not set $handle delivery to hc-pane $target; not enrolled"
+out="$(enroller_aw admin tokens mint "$handle" --json 2>/dev/null)" || warn "could not mint a token for $handle"
+tok="$(jq -r '.token // empty' <<<"$out" 2>/dev/null)"
+out=""
+[[ -n "$tok" ]] || warn "no token in aw output for $handle"
+content="$(printf 'AW_URL=%s\nAW_TOKEN=%s' "$E_URL" "$tok")"
+[[ -z "$E_CID" ]] || content+=$'\n'"AW_ACCESS_CLIENT_ID=$E_CID"
+[[ -z "$E_CSEC" ]] || content+=$'\n'"AW_ACCESS_CLIENT_SECRET=$E_CSEC"
+write_atomic "$lead" "$content"$'\n' || warn "could not write $lead"
+tok="" content=""
+write_atomic "$cache" "$target" || warn "could not write $cache"
+exit 0

@@ -19,7 +19,8 @@
 #   review-receipt claude pass --report <opus-fail.json> --fixed-by <codex-delta>.md
 #   review-receipt claude skip "low tier"   (refused unless review-tier says low for this diff)
 #   review-receipt codex  fail "missing tenant scope in Foo#bar"
-#   review-receipt --write-report <claude|codex> [--sha S] [--since S] [--tool T] [--out F] [file|-]
+#   review-receipt --write-report <claude|codex> [--mode full|flag-check] [--sha S] [--since S] [--tool T] [--out F] [file|-]
+#   (claude in a checkout marked flag-gated by review-tier --flagged must name --mode)
 #   review-receipt --show
 #   review-receipt --ledger [days]
 #
@@ -81,11 +82,13 @@ export -f patch_id; export BASE
 
 if [ "${1:-}" = "--write-report" ]; then
   shift
-  W_WHO="${1:?usage: review-receipt --write-report <claude|codex> [--sha S] [--since S] [--tool T] [--out F] [file|-]}"; shift
+  W_WHO="${1:?usage: review-receipt --write-report <claude|codex> [--sha S] [--since S] [--tool T] [--mode full|flag-check] [--out F] [file|-]}"; shift
   case "$W_WHO" in claude|codex) ;; *) echo "reviewer must be claude or codex" >&2; exit 2 ;; esac
-  W_SHA="$HEAD_SHA"; W_SINCE=""; W_TOOL=""; W_OUT=""; W_IN="-"
+  W_SHA="$HEAD_SHA"; W_SINCE=""; W_TOOL=""; W_OUT=""; W_IN="-"; W_MODE=""
   while [ $# -gt 0 ]; do
     case "$1" in
+      --mode) W_MODE="${2:?}"; shift 2
+              case "$W_MODE" in full|flag-check) ;; *) echo "--mode must be full or flag-check" >&2; exit 2 ;; esac ;;
       --sha) W_SHA=$(git rev-parse --verify "${2:?}^{commit}"); shift 2 ;;
       --since) W_SINCE=$(git rev-parse --verify "${2:?}^{commit}"); shift 2 ;;
       --tool) W_TOOL="${2:?}"; shift 2 ;;
@@ -95,15 +98,21 @@ if [ "${1:-}" = "--write-report" ]; then
       *) W_IN="$1"; shift ;;
     esac
   done
+  if [ -z "$W_MODE" ]; then
+    if [ "$W_WHO" = claude ] && [ -f "$(git rev-parse --path-format=absolute --git-path adw-flagged)" ]; then
+      echo "review-receipt: this checkout is flag-gated; name the review: --write-report claude --mode full|flag-check" >&2; exit 2
+    fi
+    W_MODE=full
+  fi
   [ -n "$W_TOOL" ] || W_TOOL=$([ "$W_WHO" = codex ] && echo codex-review || echo reviewer)
   [ -n "$W_OUT" ] || W_OUT="$REPORT_DIR/$REPO/$W_WHO-${W_SHA:0:12}-$(date +%Y%m%d-%H%M%S)-$$.json"
   W_PID=$(patch_id "$W_SHA")
   W_TMP=$(mktemp); trap 'rm -f "$W_TMP"' EXIT
   if [ "$W_IN" = "-" ]; then cat > "$W_TMP"; else cat "$W_IN" > "$W_TMP"; fi
   mkdir -p "$(dirname "$W_OUT")"
-  python3 -I - "$W_WHO" "$W_SHA" "$W_SINCE" "$W_TOOL" "$W_OUT" "$W_PID" "$REPO" "$W_TMP" <<'PY'
+  python3 -I - "$W_WHO" "$W_SHA" "$W_SINCE" "$W_TOOL" "$W_OUT" "$W_PID" "$REPO" "$W_TMP" "$W_MODE" <<'PY'
 import json, os, re, sys, time
-who, sha, since, tool, out, pid, repo, src = sys.argv[1:9]
+who, sha, since, tool, out, pid, repo, src, mode = sys.argv[1:10]
 text = open(src, errors="replace").read()
 def candidates(t):
     yield t
@@ -136,6 +145,7 @@ rep = {"kind": "adw-review-verdict", "who": who, "tool": tool, "repo": repo, "sh
        "since": since or None, "patch_id": pid or None, "verdict": verdict,
        "reviewer_said": d["verdict"], "counts": counts, "blocking": len(blocking),
        "findings": findings, "at": int(time.time())}
+if mode == "flag-check": rep["mode"] = "flag-check"
 json.dump(rep, open(out, "w"), indent=2)
 print(f"verdict file: {out}")
 print(f"  {who} {verdict} for {sha[:10]}  blocking={len(blocking)}  " + " ".join(f"{s}={counts[s]}" for s in sevs))
@@ -166,11 +176,11 @@ for n in "$FOUND" "$UNIQUE"; do case "$n" in ""|*[!0-9]*) [ -z "$n" ] || { echo 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 case "$WHO" in claude|codex) ;; *) echo "reviewer must be claude or codex" >&2; exit 2 ;; esac
 case "$VERDICT" in pass|fail|skip) ;; *) echo "verdict must be pass, fail or skip" >&2; exit 2 ;; esac
+TIER_BIN="${REVIEW_TIER:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/review-tier}"
+[ -x "$TIER_BIN" ] || TIER_BIN="$(command -v review-tier || true)"
 if [ "$VERDICT" = skip ]; then
   [ "$WHO" = claude ] || { echo "only claude can be skipped" >&2; exit 2; }
   [ -n "$NOTES" ] || { echo "skip needs a reason: review-receipt claude skip \"<why>\"" >&2; exit 2; }
-  TIER_BIN="${REVIEW_TIER:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/review-tier}"
-  [ -x "$TIER_BIN" ] || TIER_BIN="$(command -v review-tier || true)"
   [ -n "$TIER_BIN" ] || { echo "review-receipt: review-tier not found; cannot tier" >&2; exit 2; }
   TIER_MB=$(git merge-base "$BASE" HEAD 2>/dev/null) || { echo "review-receipt: no merge base with $BASE; cannot tier" >&2; exit 2; }
   TIER_OUT=$("$TIER_BIN" "$TIER_MB..HEAD") || exit 2
@@ -183,13 +193,15 @@ fi
 
 PATCH_ID=$(patch_id "$HEAD_SHA")
 MB=$(git merge-base "$BASE" HEAD 2>/dev/null || true)
+SIZE=$(git diff --numstat --no-renames "${MB:-HEAD}" HEAD 2>/dev/null | awk '{a+=$1; d+=$2} END {print a+d+0}')
 BRANCH_SHAS=$(git rev-list --max-count=200 ${MB:+$MB..}HEAD 2>/dev/null | tr '\n' ' ' || true)
 
 python3 - "$RECEIPT" "$HEAD_SHA" "$WHO" "$VERDICT" "$NOTES" "$GITDIR/adw-review-history.json" "$PATCH_ID" \
-  "$LEDGER" "$REPO" "$BRANCH" "$FOUND" "$UNIQUE" "$SEV" "$REPORT" "$FIXED_BY" "$ENFORCE_REPORT" "$BRANCH_SHAS" <<'PY'
+  "$LEDGER" "$REPO" "$BRANCH" "$FOUND" "$UNIQUE" "$SEV" "$REPORT" "$FIXED_BY" "$ENFORCE_REPORT" "$BRANCH_SHAS" "$SIZE" "$TIER_BIN" "$MB" <<'PY'
 import json, os, subprocess, sys, time
 path, sha, who, verdict, notes, hist_path, patch_id = sys.argv[1:8]
-ledger, repo, branch, found, unique, sev, report, fixed_by, enforce, branch_shas = sys.argv[8:18]
+ledger, repo, branch, found, unique, sev, report, fixed_by, enforce, branch_shas, size = sys.argv[8:19]
+tier_bin, merge_base = sys.argv[19:21]
 branch_shas = set(branch_shas.split())
 
 def refuse(msg, *more):
@@ -231,7 +243,7 @@ def matches_head(d):
     if p and patch_id and p == patch_id: return "rebase"
     return None
 
-record_sha, via, unverified, report_path, record_pid = sha, None, False, None, patch_id
+record_sha, via, unverified, report_path, record_pid, mode, confirms = sha, None, False, None, patch_id, None, None
 if verdict == "skip":
     pass
 elif verdict == "pass":
@@ -249,6 +261,26 @@ elif verdict == "pass":
         d, report_path = load(report, "--report")
         if d.get("who") != who:
             refuse(f"report is a {d.get('who')} review, not {who}", f"report: {report_path}")
+        mode = d.get("mode")
+        if mode == "flag-check" and (fixed_by or not says_pass(d) or not matches_head(d)):
+            refuse("a flag-check review covers only the commit it reviewed (or a pure rebase of it)",
+                   f"report sha: {str(d.get('sha'))[:10]}   HEAD: {sha[:10]}",
+                   "re-run the reviewer in flag-check mode on HEAD, or run the full review if the diff is now high tier")
+        if mode == "flag-check":
+            t = subprocess.run([tier_bin, f"{merge_base}..HEAD"], capture_output=True, text=True) if merge_base else None
+            if not t or t.returncode or not t.stdout.split():
+                refuse("cannot compute this diff's tier for a flag-check pass", (t.stderr.strip() if t else "no merge base"))
+            if t.stdout.split()[0] == "high":
+                try: prior = json.load(open(hist_path))
+                except Exception: prior = []
+                full = [h for h in prior if h.get("who") == "claude" and h.get("verdict") in ("pass", "fail")
+                        and h.get("mode") in (None, "full") and not h.get("unverified")
+                        and (h.get("sha") == sha or h.get("sha") in branch_shas or (h.get("patch_id") and h.get("patch_id") == patch_id))]
+                if not full or full[-1]["verdict"] != "pass":
+                    refuse("this diff is high tier; a flag-check review does not cover it",
+                           t.stdout.strip().splitlines()[-1],
+                           "run the full Opus review first, or carry a fail with --fixed-by; a flag-check pass then only confirms flag coverage")
+                confirms = "flag-coverage"
         if not says_pass(d):
             if not fixed_by:
                 refuse(f"the review itself does not pass (verdict={d.get('verdict')}, blocking findings={n_blocking(d)})",
@@ -292,6 +324,8 @@ entry = {"at": now, "repo": repo, "branch": branch, "sha": record_sha, "who": wh
          "unique": int(unique) if unique else None, "sev": sev or None, "notes": notes,
          "report": report_path}
 if via: entry["via"] = via
+if mode: entry["mode"] = mode
+if confirms: entry["confirms"] = confirms
 if unverified: entry["unverified"] = True
 with open(ledger, "a") as f:
     f.write(json.dumps(entry) + "\n")
@@ -301,6 +335,8 @@ if os.path.exists(hist_path):
     except Exception: hist = []
 row = {"who": who, "verdict": verdict, "sha": record_sha,
        "patch_id": record_pid, "at": now, "notes": notes}
+if mode: row["mode"] = mode
+if confirms: row["confirms"] = confirms
 if unverified: row["unverified"] = True
 hist.append(row)
 json.dump(hist[-200:], open(hist_path, "w"), indent=2)

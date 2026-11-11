@@ -75,7 +75,11 @@ PY
   lineage_pids=$(for c in $(git rev-list ${mb:+$mb..}"$local_sha" 2>/dev/null | head -50); do patch_id "$c"; done | sort -u)
   ancestors=$(git rev-list ${mb:+$mb..}"$local_sha" 2>/dev/null)
 
-  read -r claude codex skip < <(python3 - "$HIST" "$local_sha" "$head_pid" <<PY
+  REVIEW_TIER_BIN="${REVIEW_TIER:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/review-tier}"
+  [ -x "$REVIEW_TIER_BIN" ] || REVIEW_TIER_BIN="$(command -v review-tier || true)"
+  tier_high=high
+  if [ -n "$mb" ] && tier_out=$("$REVIEW_TIER_BIN" "$mb..$local_sha" 2>&1) && [ "$(head -1 <<<"$tier_out")" != high ]; then tier_high=nothigh; fi
+  read -r claude codex skip claude_mode < <(python3 - "$HIST" "$local_sha" "$head_pid" <<PY
 import json, sys
 hist = json.load(open(sys.argv[1])); sha, head_pid = sys.argv[2], sys.argv[3]
 try:
@@ -89,15 +93,28 @@ anc = set("""$ancestors""".split()); pids = set("""$lineage_pids""".split())
 def latest(who, ok):
     rows = [h for h in hist if h.get("who") == who and h.get("verdict") != "skip" and ok(h)]
     return rows[-1]["verdict"] if rows else "none"
-claude = latest("claude", lambda h: h["sha"] == sha or h["sha"] in anc or (h.get("patch_id") and h["patch_id"] in pids))
+# claude: this SHA, an ancestor, or a rebased copy of any state of this branch; a flag-check pass only this SHA or its rebase.
+def claude_ok(h):
+    if h.get("mode") == "flag-check":
+        return h["sha"] == sha or bool(head_pid and h.get("patch_id") == head_pid)
+    return h["sha"] == sha or h["sha"] in anc or (h.get("patch_id") and h["patch_id"] in pids)
+crows = [h for h in hist if h.get("who") == "claude" and h.get("verdict") != "skip" and claude_ok(h)]
+if "$tier_high" == "high":
+    crows = [h for h in crows if h.get("mode") != "flag-check"]
+claude, claude_mode = (crows[-1]["verdict"], crows[-1].get("mode") or "full") if crows else ("none", "-")
+# codex: this SHA, or the same whole diff (a pure rebase).
 codex = latest("codex", lambda h: h["sha"] == sha or (head_pid and h.get("patch_id") == head_pid))
 skip = "yes" if any(h.get("who") == "claude" and h.get("verdict") == "skip" and (h["sha"] == sha or h["sha"] in anc or (h.get("patch_id") and h["patch_id"] in pids)) for h in hist) else "no"
-print(claude, codex, skip)
+print(claude, codex, skip, claude_mode)
 PY
 )
+  if [ "$claude" = pass ] && [ "$claude_mode" = flag-check ]; then
+    [ -n "$mb" ] || fail "flag-check claude pass refused: no merge base with $BASE" "The tier cannot be computed without one; fetch origin."
+    tier_out=$("$REVIEW_TIER_BIN" "$mb..$local_sha" 2>&1) || fail "flag-check claude pass refused: review-tier failed" "$tier_out"
+    [ "$(head -1 <<<"$tier_out")" != high ] || fail "flag-check claude pass refused: this diff is high tier" \
+      "$(tail -1 <<<"$tier_out")" "High tier needs the full Opus review: review-receipt claude pass ... --report <verdict file>"
+  fi
   if [ "$claude" = none ] && [ "$skip" = yes ]; then
-    REVIEW_TIER_BIN="${REVIEW_TIER:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/review-tier}"
-    [ -x "$REVIEW_TIER_BIN" ] || REVIEW_TIER_BIN="$(command -v review-tier || true)"
     [ -n "$mb" ] || fail "claude skip receipt refused: no merge base with $BASE" \
       "The tier cannot be computed without one; fetch origin or run review-receipt claude pass."
     [ -n "$REVIEW_TIER_BIN" ] || fail "claude skip receipt refused: review-tier not found"

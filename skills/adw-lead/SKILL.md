@@ -18,7 +18,9 @@ Auto-dispatch ready segments (up to `max_parallel` in `graph.json`, default 3; t
 and run each `/adw` to its PR gate without asking. Hard-pause ONLY for:
 1. **G2** — the segment cut + DAG, before ANY building.
 2. **Gmerge** — a segment PR merges on its own only when the review bot approved its current head (CI
-   green, `CLEAN`). Bot high-risk, unapproved after 3 rounds, or a repo with no bot → the user.
+   green, `CLEAN`), or the bot's one cycle ended unapproved and every open finding is answered (`pr-ship <pr> --residual "<reason>"`),
+   or every new path is behind a flag that is off in production (`pr-ship <pr> --flagged <flag-key>`). Bot high-risk on an
+   unflagged PR, an unfixed Critical/Warning the user has not accepted, or a repo with no bot → the user. No waiting on bot re-reviews.
 3. **Greplan** — a segment surfaces new work, a spike, or a scope or dependency change.
 
 ## Asking the user
@@ -39,6 +41,9 @@ pending-questions file; open questions live in `adw-ask list`.
 **adw-status:** before ending any turn that waits (segments building, PRs with the review bot, the CI
 queue, an open ask): `adw-status waiting "<what; segment ids / PRs>" --for <until news expected>`.
 Epic done or unrecoverable stop: `adw-status done|failed "<one line>"`.
+A wait text that names the human needs that decision's `d-xxxxxx` id (refused otherwise); `--mention` when they are only named.
+A tab that needs restarting: `adw-respawn <terminal>` (keeps its machine, cwd, name, labels and session; refuses while working; `--retry` resumes a failed one), never a hand-built `hc run`.
+Where AgentWire is set up, receive with `aw-as lead-<epic> inbox` and send with `aw-as lead-<epic> send inform "<text>" --to first-mate` (`docs/aw-enrollers.md`).
 
 ## Chain of command
 The user → **first mate** → **you, the epic lead** → crew (segment subagents + any other tab on this

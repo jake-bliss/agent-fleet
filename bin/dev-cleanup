@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# dev-cleanup: prune merged/closed worktrees in every repo named by ADW_CLEANUP_REPOS (space-separated paths).
+# Run it from cron, a systemd timer or launchd; it prints only prune-worktrees summary lines.
+set -u
+echo "== $(date '+%F %T')"
+for r in ${ADW_CLEANUP_REPOS:-}; do
+  [ -d "$r" ] && prune-worktrees "$r" --apply 2>&1 | grep -E '^prune-worktrees:'
+done
+exit 0

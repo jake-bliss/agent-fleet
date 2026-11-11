@@ -145,7 +145,7 @@ if [ "$MODE" = diff ]; then
 
 Read the repository's AGENTS.md and/or .claude/CLAUDE.md. Inspect callsites with read-only commands (rg, git show, cat). You are strictly read-only: do not edit, create, stage, commit, fetch, push, or open a PR.
 
-Your final message MUST be JSON matching the supplied output schema, mapped from the contract's machine-readable verdict: `verdict` is "fail" if any critical, or any important at high confidence, else "pass"; `findings` carries every finding with the contract's required fields (file, real verified line, severity, claim, scenario, confidence, fix); `not_covered` names what you could not verify; `report` is the contract's human-readable review in Markdown. A clean review has empty `findings`.
+Your final message MUST be JSON matching the supplied output schema, mapped from the contract's machine-readable verdict: `verdict` is "fail" if any critical, or any important at high confidence, else "pass"; `findings` carries every finding with the contract's required fields (file, real verified line, severity, claim, scenario, proof, confidence, fix); `proof` for a critical or important is the command you ran and its decisive output, or "not runnable: <why>" (then confidence is at most medium); for a suggestion it is ""; never report nitpicks; `not_covered` names what you could not verify; `report` is the contract's human-readable review in Markdown. A clean review has empty `findings`.
 
 # Review contract (read as written)
 
@@ -164,7 +164,7 @@ elif [ "$MODE" = plan ]; then
     [ -z "$FOCUS" ] || { echo; echo "Reviewer focus requested by the caller: $FOCUS"; }
     cat <<'EOT'
 
-Your final message MUST be JSON matching the supplied output schema: `findings[].file` is the plan file or the repo file the finding concerns, `line` the real line (0 if the whole plan), severity per the contract (critical = plan as written will cause data loss/security/crash or cannot work), `verdict` "fail" if any critical or high-confidence important, else "pass"; `report` is a short Markdown critique.
+Your final message MUST be JSON matching the supplied output schema: `findings[].file` is the plan file or the repo file the finding concerns, `line` the real line (0 if the whole plan), severity per the contract (critical = plan as written will cause data loss/security/crash or cannot work), `proof` is the read-only probe you ran against the code that shows the plan is wrong (command and decisive output), or "not runnable: <why>" (then confidence is at most medium); `verdict` "fail" if any critical or high-confidence important, else "pass"; `report` is a short Markdown critique.
 
 # Review contract (read as written)
 
@@ -215,7 +215,7 @@ infra() {
 [ "$RC" -eq 0 ] || { [ "$RC" -eq 124 ] && infra "timed out after $TIMEOUT"; infra "codex exited non-zero"; }
 [ -s "$LAST" ] || infra "codex produced no final message"
 # A sandbox that cannot start leaves codex blind; its empty findings must not become a pass.
-! grep -q 'bwrap: ' "$STDERR_F" || infra "codex sandbox failed to start (bwrap); review saw nothing"
+! grep -qE '^bwrap: ' "$STDERR_F" || infra "codex sandbox failed to start (bwrap); review saw nothing"
 
 if [ "$MODE" = ask ]; then
   echo "answer (${ELAPSED}s):"
@@ -224,6 +224,19 @@ if [ "$MODE" = ask ]; then
   echo "output: $OUT"
   exit 0
 fi
+
+python3 -I - "$LAST" <<'PY' 2>/dev/null || true
+import json, sys
+path = sys.argv[1]
+d = json.load(open(path))
+for f in d.get("findings") or []:
+    proof = " ".join(str(f.get("proof") or "").split()).lower()
+    if f.get("severity") in ("critical", "important") and f.get("confidence") == "high" and (not proof or proof.startswith("not runnable")):
+        f["confidence"] = "medium"
+blocking = [f for f in d.get("findings") or [] if f.get("severity") == "critical" or (f.get("severity") == "important" and f.get("confidence") == "high")]
+d["verdict"] = "fail" if blocking else "pass"
+json.dump(d, open(path, "w"))
+PY
 
 VERDICT_FILE=""
 if [ "$MODE" = diff ]; then

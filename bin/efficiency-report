@@ -100,7 +100,7 @@ def merged_prs(author, start, end):
     d1 = dt.datetime.fromtimestamp(end, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         out = subprocess.run(["gh", "search", "prs", "--author", author, "--merged-at", f"{d0}..{d1}",
-                              "--limit", "200", "--json", "repository,number"],
+                              "--limit", "1000", "--json", "repository,number"],
                              capture_output=True, text=True, timeout=60).stdout
         return len(json.loads(out or "[]"))
     except (OSError, ValueError, subprocess.TimeoutExpired):
