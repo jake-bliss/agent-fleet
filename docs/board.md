@@ -194,7 +194,7 @@ off and `ADW_ROTATE_EXCLUDE_MACHINES` (comma-separated) skips whole machines. Th
 `adw-respawn <terminal>` restarts an hc terminal's claude session in place: it exits the old one, launches a replacement with
 the same machine, cwd, name, labels and session, waits for it to report, moves open decisions and the lead registration, then
 removes the old terminal. A replacement that never reports leaves the old terminal alone; `--retry` resumes from the journal in
-`$ADW_HOME/state/respawn/`. It refuses a working terminal unless `--force`. Set `ADW_HUB=user@host` to run it through the hub from a machine
+`$ADW_HOME/state/respawn/`. It refuses a working terminal unless `--force`, and refuses a finished one: a lead that exited is relaunched (`/adw-lead <epic>` in a new tab) rather than respawned. Set `ADW_HUB=user@host` to run it through the hub from a machine
 without the checkout.
 
 ### Pins, disk alert, ignored tabs

@@ -14,16 +14,18 @@ owner="$(stat -c %u "$f" 2>/dev/null || stat -f %u "$f" 2>/dev/null)"
 [[ "$mode" == 600 && "$owner" == "$(id -u)" ]] || { echo "aw-as: $f must be mode 0600 and owned by you" >&2; exit 1; }
 
 trim() { local x="$1"; x="${x#"${x%%[![:space:]]*}"}"; printf '%s' "${x%"${x##*[![:space:]]}"}"; }
-declare -A cfg=()
+c_url="" c_token="" c_cid="" c_csec=""
 while IFS= read -r line || [[ -n "$line" ]]; do
   line="$(trim "$line")"
   [[ "$line" == \#* || "$line" != *=* || "$line" == =* ]] && continue
   k="$(trim "${line%%=*}")" v="$(trim "${line#*=}")"
   v="${v%\"}"; v="${v#\"}"
-  case "$k" in AW_URL|AW_TOKEN|AW_ACCESS_CLIENT_ID|AW_ACCESS_CLIENT_SECRET) cfg[$k]="$v" ;; esac
+  case "$k" in AW_URL) c_url="$v" ;; AW_TOKEN) c_token="$v" ;; AW_ACCESS_CLIENT_ID) c_cid="$v" ;; AW_ACCESS_CLIENT_SECRET) c_csec="$v" ;; esac
 done <"$f"
-[[ -n "${cfg[AW_URL]:-}" && -n "${cfg[AW_TOKEN]:-}" ]] || { echo "aw-as: $f lacks AW_URL/AW_TOKEN" >&2; exit 1; }
+[[ -n "$c_url" && -n "$c_token" ]] || { echo "aw-as: $f lacks AW_URL/AW_TOKEN" >&2; exit 1; }
 
 unset AW_URL AW_TOKEN AW_ACCESS_CLIENT_ID AW_ACCESS_CLIENT_SECRET
-for k in "${!cfg[@]}"; do export "$k=${cfg[$k]}"; done
+export AW_URL="$c_url" AW_TOKEN="$c_token"
+[[ -z "$c_cid" ]] || export AW_ACCESS_CLIENT_ID="$c_cid"
+[[ -z "$c_csec" ]] || export AW_ACCESS_CLIENT_SECRET="$c_csec"
 exec aw "$@"

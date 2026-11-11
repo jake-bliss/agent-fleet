@@ -4,6 +4,7 @@
   "marker_prefix": "review-bot",
   "report_marker": "<!-- review-bot:report -->",
   "review_prefix": "Review bot:",
+  "bot_approver": {"login": "approver-bot-login", "gh": ["gh-as-approver"]},
   "repos": {
     "your-org/service-with-a-review-bot": {"bot": "review-bot-login", "merge": "bot"},
     "your-org/service-without-one": {"merge": "green"}

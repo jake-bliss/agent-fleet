@@ -102,8 +102,8 @@ others run the full suite locally (or on a remote CI box). **The PR review bot**
    the finding with a reply starting `Fixed in <sha>`, a verified false positive with a reply starting `False positive:` + `file:line`,
    or a risk the user accepted in an ask naming `<repo>#<n>` whose chosen option starts `accept`) → `pr-ship <pr> --residual "<reason>"`
    (needs verified Opus and Codex receipts on the head; refuses high-risk). A PR whose every new path sits behind a flag that is off, with the flag key in
-   the PR body → `pr-ship <pr> --flagged <flag-key>` (also needs an Opus pass that checked flag coverage:
-   `review-tier --flagged <flag-key>`, the reviewer's flag-check mode, then `review-receipt claude pass ... --mode flag-check`). Monitor after either merge;
+   the PR body → `pr-ship <pr> --flagged <flag-key>` (also needs an Opus pass covering the flag: a direct full pass on the head or an ancestor, or a carried full pass plus a flag-check pass on the exact head:
+   `review-tier --flagged <flag-key>`, the reviewer in flag-check mode, `review-receipt --write-report claude --mode flag-check ...`, then `review-receipt claude pass ... --report <verdict file>`). Monitor after either merge;
    a regression → revert or turn the flag off at once, then tell the user.
 
 ## Stop early — the ONLY interrupts

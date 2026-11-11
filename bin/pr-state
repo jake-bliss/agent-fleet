@@ -556,10 +556,10 @@ def wait(targets, cond, args):
 
 FINDINGS_QUERY = """query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){
 id author{login} reviewThreads(first:100){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line originalLine
-comments(first:50){totalCount nodes{author{login} body url}}}}}}}"""
+comments(first:50){totalCount nodes{author{login} body url createdAt originalCommit{oid}}}}}}}}"""
 
 FINDINGS_MORE = """query($id:ID!,$c:String!){node(id:$id){... on PullRequest{reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved isOutdated path line originalLine
-comments(first:50){totalCount nodes{author{login} body url}}}}}}}"""
+comments(first:50){totalCount nodes{author{login} body url createdAt originalCommit{oid}}}}}}}}"""
 
 
 def clean_body(body, limit):

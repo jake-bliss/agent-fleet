@@ -552,7 +552,7 @@ def retarget_aw(ep, pane):
     try:
         cmd = os.environ.get("AW_LEAD_ENROLL")
         if not cmd:
-            own = Path(__file__).resolve().parent / "fleet/scripts/aw-lead-enroll"
+            own = Path(__file__).resolve().parent.parent / "bin/aw-lead-enroll"
             cmd = str(own) if own.exists() else (shutil.which("aw-lead-enroll") or "aw-lead-enroll")
         subprocess.run([cmd, "--retarget-only", ep, pane], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                        timeout=20, check=False)

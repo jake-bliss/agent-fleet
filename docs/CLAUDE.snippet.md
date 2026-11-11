@@ -35,6 +35,7 @@ adw-ask new --class <class> --title "<one line>" --epic <slug> --body-file /tmp/
   `pr-ship <pr> --residual "<reason>"` merges after checking the review receipts and the findings ledger; it refuses a high-risk PR. For a change whose every
   new path sits behind a flag that is off in production, `pr-ship <pr> --flagged <flag-key>` applies the same checks plus a recorded flag-coverage review.
   Neither combines with `--approved-by`.
+  Both approve first as the account named in `pr-tools.json` `bot_approver` (`{"login": ..., "gh": [command...]}`; `gh` is required, since the default gh is the author and cannot approve; an `ssh` wrapper gets the review body quoted, a plain command does not). See `config/pr-tools.example.json`.
 
 ## Declare long-running state with `adw-status`
 

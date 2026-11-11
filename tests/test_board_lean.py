@@ -94,3 +94,19 @@ class AcceptsGzipTest(unittest.TestCase):
         self.assertFalse(board.accepts_gzip("*, gzip;q=0"))
         self.assertTrue(board.accepts_gzip("*;q=0, gzip"))
         self.assertFalse(board.accepts_gzip("*;q=0"))
+
+
+class PageScript(unittest.TestCase):
+    def test_inline_script_parses(self):
+        import re
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not installed")
+        html = (Path(__file__).resolve().parent.parent / "board" / "board_page.html").read_text()
+        body = "\n".join(re.findall(r"<script>(.*?)</script>", html, re.S))
+        f = Path(tempfile.mkdtemp()) / "page.js"
+        f.write_text(body)
+        p = subprocess.run([node, "--check", str(f)], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)

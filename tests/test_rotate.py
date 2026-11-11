@@ -254,3 +254,11 @@ class TestProbe(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConfigHome(unittest.TestCase):
+    def test_rotate_json_read_from_adw_home(self):
+        home = Path(tempfile.mkdtemp())
+        (home / "rotate.json").write_text(json.dumps({"enabled": False}))
+        with mock.patch.dict(os.environ, {"ADW_HOME": str(home)}):
+            self.assertFalse(rotate.config()["enabled"])

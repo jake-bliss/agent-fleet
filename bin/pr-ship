@@ -113,8 +113,11 @@ def bot_login():
 
 
 def bot_gh():
-    cmd = (ps.CONFIG.get("bot_approver") or {}).get("gh") or ["gh"]
-    return [str(c) for c in cmd]
+    cfg = ps.CONFIG.get("bot_approver") or {}
+    cmd = cfg.get("gh")
+    if cfg.get("login") and not cmd:
+        raise Refused('pr-tools.json "bot_approver" needs "gh": the command that runs gh as that account (the default gh is the author and cannot approve)')
+    return [str(c) for c in (cmd or ["gh"])]
 
 
 def ci_unmet(info):
@@ -261,7 +264,9 @@ def accepted_by_approver(ask_id, cache, repo, number):
 
 def bot_approve(repo, number, body):
     body = UNSAFE_BODY.sub("", body)
-    run([*bot_gh(), "pr", "review", str(number), "-R", repo, "--approve", "--body", f"'{body}'"])
+    gh = bot_gh()
+    remote = os.path.basename(gh[0]) == "ssh"
+    run([*gh, "pr", "review", str(number), "-R", repo, "--approve", "--body", f"'{body}'" if remote else body])
 
 
 APPROVE_POLLS = 12

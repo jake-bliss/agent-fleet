@@ -391,3 +391,36 @@ class StallRepointTest(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PortabilityTest(Base):
+    def test_aw_as_runs_under_system_bash(self):
+        if not os.path.exists("/bin/bash"):
+            self.skipTest("no /bin/bash")
+        self.write_cfg("lead-ep", LEAD_TOKEN)
+        env = {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.home), "FAKE_ARGV": str(self.argv),
+               "FAKE_ENV": str(self.envlog)}
+        p = subprocess.run(["/bin/bash", str(AS), "lead-ep", "inbox"], env=env, capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"url={URL} token={LEAD_TOKEN}", self.envlog.read_text())
+
+    def test_enroll_without_timeout_binary(self):
+        self.write_cfg("enroller", ENROLLER_TOKEN)
+        bare = f"{self.bin}:/usr/bin:/bin"
+        if any(os.path.exists(f"{d}/{n}") for d in ("/usr/bin", "/bin") for n in ("timeout", "gtimeout")):
+            self.skipTest("system PATH has timeout")
+        p = self.run_script(ENROLL, "ep", "node-b/t18", PATH=bare)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(self.calls()[0], "admin agents register fleet lead-ep --delivery hc-pane --target node-b/t18")
+
+    def test_enroll_uses_gtimeout_when_only_that_exists(self):
+        self.write_cfg("enroller", ENROLLER_TOKEN)
+        gt = self.bin / "gtimeout"
+        gt.write_text(f'#!/bin/sh\necho gtimeout "$@" >> "{self.tmp}/gt.log"\nshift\nexec "$@"\n')
+        gt.chmod(0o755)
+        if any(os.path.exists(f"{d}/timeout") for d in ("/usr/bin", "/bin")):
+            self.skipTest("system PATH has timeout")
+        p = self.run_script(ENROLL, "ep", "node-b/t18", PATH=f"{self.bin}:/usr/bin:/bin")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("gtimeout 8 aw", (self.tmp / "gt.log").read_text())

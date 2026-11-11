@@ -359,6 +359,7 @@ async function loadFull(id) {
     fullDec[id] = await r.json();
     last && (document.getElementById("needs").dataset.html = "", render(last));
   } catch (e) {}
+}
 
 function decisionRow(d) {
   if (d.slim && fullDec[d.id]) d = { ...fullDec[d.id], delivered: d.delivered, undeliverable: d.undeliverable, delivery_error: d.delivery_error };

@@ -53,7 +53,7 @@ print(json.dumps(out))
 def config(root=None):
     cfg = dict(DEFAULTS)
     try:
-        cfg.update({k: v for k, v in json.loads((Path(root or ROOT) / "rotate.json").read_text()).items() if k in DEFAULTS})
+        cfg.update({k: v for k, v in json.loads((Path(root or os.environ.get("ADW_HOME") or Path.home() / ".claude/adw") / "rotate.json").read_text()).items() if k in DEFAULTS})
     except (OSError, ValueError, AttributeError):
         pass
     if os.environ.get("ADW_ROTATE") == "0":

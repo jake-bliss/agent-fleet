@@ -43,7 +43,9 @@ enroller_aw() {
     export AW_URL="$E_URL" AW_TOKEN="$E_TOKEN"
     [[ -z "$E_CID" ]] || export AW_ACCESS_CLIENT_ID="$E_CID"
     [[ -z "$E_CSEC" ]] || export AW_ACCESS_CLIENT_SECRET="$E_CSEC"
-    exec timeout 8 aw "$@"
+    if command -v timeout >/dev/null 2>&1; then exec timeout 8 aw "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then exec gtimeout 8 aw "$@"
+    else exec aw "$@"; fi
   )
 }
 

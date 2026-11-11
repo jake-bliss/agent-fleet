@@ -1672,3 +1672,30 @@ class FlagDarkAcceptTest(FlaggedTest):
         for body, want in (("\u26a0\ufe0f **Warning** (security)", "warning"), ("Medium: n+1", "warning"),
                            ("**Critical**: leak", None), ("Warning: critical leak", None), ("Nit: x", None), ("looks wrong", None)):
             self.assertEqual(ps.finding_level(body), want, body)
+
+
+class FindingsQueryFieldsTest(unittest.TestCase):
+    def test_comment_nodes_request_url_created_and_original_commit(self):
+        for q in (ps.FINDINGS_QUERY, ps.FINDINGS_MORE):
+            self.assertIn("nodes{author{login} body url createdAt originalCommit{oid}}", q)
+
+
+class BotApproveTest(unittest.TestCase):
+    def approve(self, cfg):
+        calls = []
+        with mock.patch.dict(ship.ps.CONFIG, {"bot_approver": cfg}), mock.patch.object(ship, "run", calls.append):
+            ship.bot_approve("o/r", 7, "Approved by the bot")
+        return calls[0]
+
+    def test_plain_gh_passes_body_as_one_argv_item(self):
+        cmd = self.approve({"login": "approver-bot", "gh": ["gh-as-approver"]})
+        self.assertEqual(cmd[-1], "Approved by the bot")
+
+    def test_ssh_wrapped_gh_quotes_body(self):
+        cmd = self.approve({"login": "approver-bot", "gh": ["ssh", "approver-host", "gh"]})
+        self.assertEqual(cmd[-1], "'Approved by the bot'")
+
+    def test_login_without_gh_is_refused(self):
+        with mock.patch.dict(ship.ps.CONFIG, {"bot_approver": {"login": "approver-bot"}}):
+            with self.assertRaises(ship.Refused):
+                ship.bot_gh()
