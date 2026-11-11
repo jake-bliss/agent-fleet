@@ -871,6 +871,12 @@ class TestRedispatch(StallCase):
         lead = json.loads((self.h.root / "epics" / "e1" / "lead.json").read_text())
         self.assertEqual(lead["pane"], "t12")
 
+    def test_repoint_rewrites_pane_for_matching_session(self):
+        self.assertTrue(stall.repoint_lead(self.h.root, "e1", "t99", "sess-e1"))
+        lead = json.loads((self.h.root / "epics" / "e1" / "lead.json").read_text())
+        self.assertEqual((lead["pane"], lead["session"]), ("t99", "sess-e1"))
+        self.assertFalse(stall.repoint_lead(self.h.root, "e1", "t99", "sess-e1"))
+
 
 if __name__ == "__main__":
     unittest.main()

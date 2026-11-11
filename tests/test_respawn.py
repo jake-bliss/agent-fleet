@@ -464,6 +464,46 @@ class TestReview(Rig):
         self.assertEqual(keys[-1], ["enter"])
 
 
+class TestMoveLeads(Rig):
+    def load(self):
+        import importlib.machinery
+        import importlib.util
+        loader = importlib.machinery.SourceFileLoader("adw_respawn_t", str(RESPAWN))
+        mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("adw_respawn_t", loader))
+        loader.exec_module(mod)
+        return mod
+
+    def lead(self, state, epic, pane, session):
+        d = state / "epics" / epic
+        d.mkdir(parents=True)
+        (d / "lead.json").write_text(json.dumps({"pane": pane, "session": session}))
+        return d / "lead.json"
+
+    def test_repoints_matching_session_and_leaves_others(self):
+        from unittest import mock
+        mod = self.load()
+        state = self.tmp / "state"
+        mine = self.lead(state, "a", "t7", "s1")
+        other_session = self.lead(state, "b", "t7", "s2")
+        other_pane = self.lead(state, "c", "t8", "s1")
+        with mock.patch.object(mod, "STATE", state):
+            self.assertEqual(mod.move_leads("t7", "t9", "s1"), 1)
+        self.assertEqual(json.loads(mine.read_text()), {"pane": "t9", "session": "s1"})
+        self.assertEqual(json.loads(other_session.read_text())["pane"], "t7")
+        self.assertEqual(json.loads(other_pane.read_text())["pane"], "t8")
+
+    def test_remote_ref_and_unreadable_lead_file(self):
+        from unittest import mock
+        mod = self.load()
+        state = self.tmp / "state"
+        remote = self.lead(state, "a", "node-a/t1", "s")
+        broken = self.lead(state, "b", "x", "s")
+        broken.write_text("{not json")
+        with mock.patch.object(mod, "STATE", state):
+            self.assertEqual(mod.move_leads("node-a/t1", "node-a/t9", "s"), 1)
+        self.assertEqual(json.loads(remote.read_text())["pane"], "node-a/t9")
+
+
 class TestMigratePane(Rig):
     def test_clears_delivery_failure_on_undelivered_only(self):
         import importlib.util
