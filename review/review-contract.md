@@ -22,10 +22,14 @@ likewise a precondition, not a finding.
 | **CRITICAL** | Must fix before merge | security, data loss, corruption, cross-tenant leak, crash on a live path |
 | **IMPORTANT** | Should fix | real defect, wrong behavior on a reachable input, missing test for changed logic |
 | **SUGGESTION** | Worth doing | simplification, reuse, clarity with a concrete payoff |
-| **NITPICK** | Optional | style/preference. Cap at 3. Prefer zero. |
+| **NITPICK** | Not reported | style, naming, preference: leave them out entirely |
 
-Anything you cannot state a failing scenario for is a NITPICK at best. Severity inflation destroys
+Anything you cannot state a failing scenario for is not a finding. Severity inflation destroys
 the signal — a review where everything is CRITICAL is a review nobody reads.
+
+**Out of scope, never reported:** style, naming, structure and taste; YAGNI and "you might want";
+risks that only matter after some future change; coverage nags that name no behaviour a test would
+catch. Token spent on these is token not spent finding defects.
 
 ## Every finding carries a failure scenario
 
@@ -34,10 +38,23 @@ A finding without concrete inputs → wrong output is a guess. Required shape:
 - **Location** — `file:line`, the real line, verified by reading it
 - **Claim** — one sentence, the defect itself
 - **Scenario** — specific input or state → the wrong result. Name real columns, params, routes.
+- **Proof** — CRITICAL and IMPORTANT only, see **Prove it**
 - **Fix** — concrete, with code where it is short
 
 If you cannot produce the scenario, drop the finding. Say "no findings" without embarrassment —
 a clean review honestly reached is a result.
+
+## Prove it
+
+A CRITICAL or IMPORTANT finding is proven by running something against the real code, not by
+reasoning about it: a failing test, a one-off script (`python3 -c`, `ruby -e`, `node -e`), a
+`git`/`rg` query that shows the missing caller, a read-only probe. Run it in place without writing
+to the tree, and put the command and the decisive lines of its output in **Proof**.
+
+When it truly cannot run where you are (needs a database, prod, the network, a live service),
+write `not runnable: <why>` and walk the path line by line instead; such a finding is at most
+`confidence: medium`. Never present an unrun claim as run. The orchestrator re-runs every proof
+command before acting on a finding and drops the finding if the output does not show the defect.
 
 ## Verify before you report
 
@@ -74,11 +91,11 @@ fact about the whole repo. Name where you verified it.
 ### Critical
 - `file:line` — <claim>
   **Scenario**: <inputs/state -> wrong outcome>
+  **Proof**: <command run -> decisive output, or "not runnable: <why>">
   **Fix**: <concrete>
 
 ### Important
 ### Suggestions
-### Nitpicks
 ### Done well
 <only genuinely notable choices — omit the section rather than pad it>
 
@@ -98,9 +115,10 @@ When dispatched as a lens or as one side of a cross-model review, also return:
     {
       "file": "path",
       "line": 0,
-      "severity": "critical | important | suggestion | nitpick",
+      "severity": "critical | important | suggestion",
       "claim": "one sentence",
       "scenario": "inputs/state -> wrong outcome",
+      "proof": "command -> decisive output, or not runnable: why (critical/important)",
       "confidence": "high | medium | low"
     }
   ]
@@ -121,6 +139,9 @@ When dispatched as a lens or as one side of a cross-model review, also return:
 5. **Idempotency** — a retried job, webhook, or request must not double-apply.
 6. **Secrets** — never in logs, URLs, error messages, or client bundles.
 7. **Tests for changed logic** — a behavior change with no test that fails without it is IMPORTANT.
+8. **Flag coverage** — a PR whose body names a feature flag merges without the owner (`pr-ship --flagged`), so
+   check that every new code path, job, callback, serializer field and migration effect is off while the flag is off.
+   A path that runs with the flag off is CRITICAL; a migration that is not additive and backward-compatible is CRITICAL.
 
 Stack-specific and domain lenses live in `lenses/` next to this file. Read them as written rather
 than from memory; a lens summarized from memory is a lens not applied.

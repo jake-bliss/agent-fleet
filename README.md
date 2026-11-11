@@ -71,6 +71,7 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `bin/pr-state`, `pr-ship`, `pr-reply` | PR CI/review/merge state, rule-gated merge, review-thread replies; configured by `$ADW_HOME/pr-tools.json` |
 | `bin/codex-review`, `claude-review`, `efficiency-report` | second-model review, headless Claude review (both write a verdict file for `review-receipt --report`), context-spend report |
 | `bin/adw-tick`, `adw-disk-check` | cheap lead wake check; host disk reading the board alerts on |
+| `bin/adw-respawn`, `dev-cleanup` | restart a terminal's claude session in place keeping its labels, cwd and session; prune merged worktrees across `ADW_CLEANUP_REPOS` |
 | `hooks/` | `tool-adoption`, `model-pin`, `cross-model-review`, `compact-resume`, `hc-session-state` Claude Code hooks, and herdr's state hook; see `docs/hooks.md` |
 | `tests/` | unit tests (`python3 -m unittest discover -s tests`); every test isolates `ADW_HOME` and the `hc` binary |
 | `review/` | the shared review contract and the lenses reviewers apply |

@@ -29,6 +29,7 @@ class Base(unittest.TestCase):
             mock.patch.object(asks, "agent_info", lambda p: {"status": "idle", "session": "s1"}),
             mock.patch.object(asks, "seen_by_agent", lambda d: True),
             mock.patch.object(asks, "prompt", self.prompt),
+            mock.patch.object(asks, "ships_without_ask", lambda options: None),
             mock.patch("time.sleep", lambda s: None),
             mock.patch.dict(os.environ, {"HC_TERMINAL_ID": "t13", "ADW_HC_MACHINE": "node-b"}),
         ]
@@ -92,16 +93,25 @@ class TestNew(Base):
         self.assertEqual(d["status"], "open")
         self.assertIn("merge", d["gated_reason"].lower())
 
-    def test_scan_hit_in_body_forces_gated(self):
+    def test_scan_hit_in_body_only_does_not_gate_a_non_gated_class(self):
         i, _, _ = self.new("--title", "Proceed?", "--body", "this runs a Migration", "--class", "reversible", "--recommend", "a", *OPTS)
-        self.assertEqual(asks.load(i)["status"], "open")
+        self.assertEqual(asks.load(i)["status"], "answered")
+
+    def test_scan_hit_in_body_of_unclassified_ask_still_gates(self):
+        self.assertIsNotNone(asks.gate_reason({"title": "Proceed?", "body": "this runs a Migration", "options": []}))
 
     def test_scan_hit_via_option_label_only(self):
         i, _, _ = self.new("--title", "Proceed?", "--class", "reversible", "--recommend", "a",
-                           "--option", "a=ship org#123@abc", "--option", "b=wait")
+                           "--option", "a=squash the branch", "--option", "b=wait")
         d = asks.load(i)
         self.assertEqual(d["status"], "open")
-        self.assertIn("ship org#123", d["gated_reason"])
+        self.assertIn("squash", d["gated_reason"])
+
+    def test_ship_token_in_non_shape_class_refused(self):
+        i, err, _ = self.new("--title", "Proceed?", "--class", "reversible", "--recommend", "a",
+                             "--option", "a=ship acme#123@abc", "--option", "b=wait")
+        self.assertIsNone(i)
+        self.assertIn("can't carry a PR merge", err)
 
     def test_missing_class_refused_and_nothing_saved(self):
         i, err, _ = self.new("--title", "Pick one", "--recommend", "a", *OPTS)
@@ -118,7 +128,7 @@ class TestNew(Base):
         self.assertEqual((d["status"], d["answer"]["by"]), ("answered", "auto"))
 
     def test_size_ask_mentioning_prod_still_gated(self):
-        i, _, _ = self.new("--title", "Ship as one PR?", "--body", "touches prod data", "--class", "size", "--recommend", "a", *OPTS)
+        i, _, _ = self.new("--title", "Ship as one PR? touches prod data", "--class", "size", "--recommend", "a", *OPTS)
         d = asks.load(i)
         self.assertEqual(d["status"], "open")
         self.assertIn("prod", d["gated_reason"])
@@ -128,7 +138,7 @@ class TestNew(Base):
         self.assertEqual(asks.load(i)["status"], "open")
 
     def test_ship_token_gates_every_pr_shape_class(self):
-        for c in asks.NON_GATED:
+        for c in asks.PR_SHAPE_CLASSES:
             i, _, _ = self.new("--title", f"Proceed {c}?", "--class", c, "--recommend", "a",
                                "--option", "a=ship org#123@abc1234", "--option", "b=wait")
             self.assertEqual(asks.load(i)["status"], "open", c)
@@ -167,8 +177,19 @@ class TestGateWidening(Base):
     def test_merge_phrasings_gate(self):
         for p in ("Ship PR #123?", "ship #123", "pr-ship 123", "Land org#123", "squash it", "drop", "publish release",
                   "Merging now", "cut a release"):
-            i, _, _ = self.new("--title", p, "--class", "reversible", "--recommend", "a", *OPTS)
-            self.assertEqual(asks.load(i)["status"], "open", p)
+            i, err, _ = self.new("--title", p, "--class", "reversible", "--recommend", "a", *OPTS)
+            if i is None:
+                self.assertIn("can't carry a PR merge", err, p)
+            else:
+                self.assertEqual(asks.load(i)["status"], "open", p)
+
+    def test_danger_phrasings_gate_every_class(self):
+        for p in ("Run payouts", "Rotate the API key", "api-key reset", "Reset password", "Purge old rows", "Wipe the table",
+                  "Truncate events", "Teardown the stack", "tear-down EU", "Void invoice 12", "Issue credit to buyer",
+                  "Grant admin access", "Disable MFA for user"):
+            for cls in ("reversible", "size"):
+                i, _, _ = self.new("--title", p, "--class", cls, "--recommend", "a", *OPTS)
+                self.assertEqual(asks.load(i)["status"], "open", (p, cls))
 
     def test_already_answered_race(self):
         real = asks.record_answer
@@ -294,6 +315,99 @@ class TestDedupe(Base):
         asks.record_answer(a, "a")
         b, _, _ = self.new("--title", "Pick one", "--class", "scope", "--epic", "e", *OPTS)
         self.assertNotEqual(a, b)
+
+
+
+
+class TestShipWithoutAsk(Base):
+    ARGS = ("--title", "Ship it?", "--class", "merge", "--option", "a=ship acme#123@abc1234", "--option", "b=hold")
+
+    def test_merge_ask_refused_when_plain_pr_ship_would_act(self):
+        line = "acme#123 dry-run: would squash-merge (review bot approved current head, CI green, CLEAN)"
+        with mock.patch.object(asks, "ships_without_ask", lambda options: line):
+            i, err, _ = self.new(*self.ARGS)
+        self.assertIsNone(i)
+        self.assertIn("no ask needed", err)
+        self.assertEqual(asks.all_asks(), [])
+
+    def test_merge_ask_filed_when_pr_ship_refuses(self):
+        i, _, _ = self.new(*self.ARGS)
+        self.assertEqual(asks.load(i)["status"], "open")
+
+    def test_other_gated_classes_skip_the_check(self):
+        with mock.patch.object(asks, "ships_without_ask", side_effect=AssertionError("called")):
+            i, _, _ = self.new("--title", "Flip it?", "--class", "auth", "--option", "a=ship acme#123@abc1234", "--option", "b=hold")
+        self.assertEqual(asks.load(i)["status"], "open")
+
+
+class TestShipsWithoutAskProbe(unittest.TestCase):
+    OPTS = [{"key": "a", "label": "ship acme#123@abc1234 now"}]
+
+    def run_probe(self, rc, out, exe="/bin/pr-ship"):
+        res = mock.Mock(returncode=rc, stdout=out)
+        with mock.patch.object(asks, "ship_repos", lambda: {"acme": "org/acme"}), mock.patch("shutil.which", lambda n: exe), mock.patch("subprocess.run", return_value=res) as run:
+            return asks.ships_without_ask(self.OPTS), run
+
+    def test_would_merge_is_reported_with_full_repo(self):
+        got, run = self.run_probe(0, "acme#123 dry-run: would squash-merge (x)\n")
+        self.assertIn("would squash-merge", got)
+        self.assertEqual(run.call_args[0][0], ["/bin/pr-ship", "123", "-R", "org/acme", "--dry-run"])
+
+    def test_refuse_wait_and_done_are_not_reported(self):
+        for rc, out in ((4, "acme#123 refuse: needs the human"), (3, "acme#123 wait: CI"), (0, "acme#123 done: PR is merged; nothing to do")):
+            self.assertIsNone(self.run_probe(rc, out)[0])
+
+    def test_errors_and_missing_tool_fail_open(self):
+        with mock.patch("shutil.which", lambda n: "/bin/pr-ship"), mock.patch("subprocess.run", side_effect=OSError):
+            self.assertIsNone(asks.ships_without_ask(self.OPTS))
+        self.assertIsNone(self.run_probe(0, "acme#123 dry-run: would squash-merge", exe=None)[0])
+
+    def test_unknown_repo_is_not_probed(self):
+        with mock.patch("shutil.which", lambda n: "/bin/pr-ship"), mock.patch("subprocess.run") as run:
+            self.assertIsNone(asks.ships_without_ask([{"key": "a", "label": "ship mystery#5@abc1234"}]))
+        run.assert_not_called()
+
+
+class TestNonGatedHint(Base):
+    def test_gate_word_in_non_gated_ask_explains_why_it_stays_open(self):
+        i, err, _ = self.new("--title", "Drop the old column?", "--class", "design", "--recommend", "a", *OPTS)
+        self.assertEqual(asks.load(i)["status"], "open")
+        self.assertIn("stays open for the human", err)
+        self.assertIn("'Drop'", err)
+
+
+    def test_merge_wording_in_fix_streak_ask_is_refused(self):
+        i, err, _ = self.new("--title", "Round 2 findings", "--class", "fix-streak", "--recommend", "a",
+                             "--option", "a=one more patch round, then ship acme#12@abc1234", "--option", "b=park")
+        self.assertIsNone(i)
+        self.assertIn("can't carry a PR merge", err)
+        self.assertEqual(list(asks.ASKS.glob("d-*.json")), [])
+
+    def test_merge_wording_in_size_ask_still_allowed(self):
+        i, _, _ = self.new("--title", "Over size, ship as one PR?", "--class", "size", "--recommend", "a", *OPTS)
+        self.assertEqual(asks.load(i)["status"], "answered")
+
+    def test_domain_merge_wording_still_files(self):
+        i, _, _ = self.new("--title", "Merge duplicate customer accounts", "--class", "design", "--recommend", "a", *OPTS)
+        self.assertEqual(asks.load(i)["status"], "open")
+
+
+class TestRelocate(unittest.TestCase):
+    def test_answer_follows_session_to_new_pane(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(asks, "ASKS", Path(tmp)), \
+                mock.patch.object(asks, "agent_info", lambda p: {"status": "idle", "session": "s1"} if p == "t9" else {"status": "idle", "session": "other"}), \
+                mock.patch.object(asks.mux, "terminal_for_session", lambda s: "t9"), \
+                mock.patch.object(asks, "seen_by_agent", lambda d: False), \
+                mock.patch.object(asks, "prompt", lambda p, t: sent.append(p) or (None, None)), \
+                mock.patch("time.sleep", lambda s: None):
+            sent = []
+            d = {"id": "d-abcdef", "created": 1, "status": "answered", "title": "t", "epic": "e", "options": [{"key": "a", "label": "x"}],
+                 "pane": "t1", "session": "s1", "answer": {"choice": "a", "at": 2, "by": "human"}}
+            asks.save(d)
+            got = asks.deliver(d)
+            self.assertEqual(sent, ["t9"])
+            self.assertEqual(got["pane"], "t9")
+            self.assertFalse(got.get("undeliverable"))
 
 
 if __name__ == "__main__":

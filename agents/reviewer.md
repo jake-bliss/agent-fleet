@@ -19,8 +19,21 @@ Read these as written — never from memory, never summarized (`$ADW_HOME` defau
    - `house-style.md` — always
    - `cross-tenant-isolation.md` — any query, serializer, job, or cache key in a multi-tenant app
    - `migration-lock-safety.md` — any schema migration
+   - `flag-coverage.md` — any PR that will merge via `pr-ship --flagged`
 
 Skipping a lens that applies is a failed review. Say which lenses you applied.
+
+## Flag-check mode
+
+When the prompt says `flag-check <FLAG_KEY>` (review-tier printed `flag-check`), the review has one question:
+read the contract for severity, output and the verdict file, then `~/.claude/adw/lenses/flag-coverage.md`, and
+answer only that. Skip the other lenses and the general defect hunt; Codex covers those. Write the
+verdict file with `--mode flag-check`. It counts only for the commit you reviewed (or a pure rebase of it).
+
+On a high-tier flagged PR the same run is a confirmation, not the review: after a round-1 full Opus fail is fixed and the
+fix carried (`review-receipt claude pass --report <opus fail> --fixed-by <codex delta verdict>`), you are launched once
+in flag-check mode on the final head to confirm the flag covers every new path. Never re-run a fresh full review to get a
+clean pass; after two full fails on one segment the lead stops and files `adw-ask --class fix-streak`.
 
 ## Do not inherit the author's blind spot
 
@@ -47,7 +60,7 @@ When you reviewed a local worktree or branch, your last step writes your JSON ve
 same one, unedited) to a verdict file. This is the one write you make:
 
 ```bash
-cd <worktree> && review-receipt --write-report claude --sha <the commit you reviewed> [--since <snapshot, delta rounds>] - <<'JSON'
+cd <worktree> && review-receipt --write-report claude --mode <full|flag-check> --sha <the commit you reviewed> [--since <snapshot, delta rounds>] - <<'JSON'
 {"reviewer": "claude", "verdict": "...", "findings": [...]}
 JSON
 ```

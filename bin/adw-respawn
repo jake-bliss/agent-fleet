@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Restart an hc terminal's claude session in place, keeping its machine, cwd, name and labels.
+Order: /exit the old terminal and wait for it to finish (it is not removed), launch the replacement with the
+same argv wrapper the original ran under, wait for it to report, move decisions and lead registrations, then
+`hc rm` the old terminal. A replacement that never reports leaves the old terminal in place for --retry.
+Usage: adw-respawn [--force] <terminal>      (t7 or machine/t7)
+       adw-respawn --retry <terminal>        resume from the journal in state/respawn/
+Exit: 0 done, 1 failed (journal kept for --retry), 2 usage."""
+import argparse
+import importlib.util
+import json
+import os
+import re
+import shlex
+import sys
+import time
+from pathlib import Path
+
+STATE = Path(os.environ.get("ADW_HOME") or Path.home() / ".claude/adw")
+ADW = Path(os.environ.get("ADW_DIR") or STATE / "board")
+WAIT = float(os.environ.get("ADW_RESPAWN_TIMEOUT") or 60)
+
+
+def load_asks():
+    spec = importlib.util.spec_from_file_location("asks", ADW / "asks.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class Fail(Exception):
+    pass
+
+
+def poll(fn, timeout=None):
+    deadline = time.monotonic() + (WAIT if timeout is None else timeout)
+    while True:
+        got = fn()
+        if got:
+            return got
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.5)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="adw-respawn", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("terminal")
+    ap.add_argument("--retry", action="store_true")
+    ap.add_argument("--force", action="store_true")
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as exc:
+        return 2 if exc.code else 0
+    if not (ADW / "mux.py").exists():
+        hub = os.environ.get("ADW_HUB")
+        if not hub:
+            print(f"adw-respawn: no {ADW}/mux.py here; set ADW_HUB=user@host to respawn through the hub", file=sys.stderr)
+            return 1
+        flags = [f for f, on in (("--retry", a.retry), ("--force", a.force)) if on]
+        remote = "export PATH=$HOME/.local/bin:$PATH; exec adw-respawn " + shlex.join([a.terminal, *flags])
+        os.execvp("ssh", ["ssh", hub, remote])
+    asks = load_asks()
+    mux = asks.mux
+    if not mux.valid(a.terminal):
+        print(f"adw-respawn: bad terminal id {a.terminal!r}", file=sys.stderr)
+        return 2
+    mach, local = mux.split(mux.strip_self(a.terminal))
+    old = asks.pane_ref(local) if not mach else a.terminal
+    jid = f"{mach or 'local'}-{local}"
+    jpath = STATE / "state/respawn" / f"{jid}.json"
+
+    def save(j, step):
+        j["step"] = step
+        jpath.parent.mkdir(parents=True, exist_ok=True)
+        tmp = jpath.with_name(f".{jpath.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(j, indent=2))
+        tmp.replace(jpath)
+
+    try:
+        if a.retry:
+            try:
+                j = json.loads(jpath.read_text())
+            except (OSError, ValueError):
+                raise Fail(f"no journal for {a.terminal} at {jpath}")
+        else:
+            if jpath.exists():
+                raise Fail(f"{jpath} exists: an earlier respawn did not finish; use --retry")
+            rec, err = mux.hc_json("get", a.terminal)
+            if not rec or rec.get("state") == "finished":
+                raise Fail(f"{a.terminal}: {err or 'terminal is finished'}")
+            state = mux.status_of(rec)
+            if state in ("working", "blocked") and not a.force:
+                raise Fail(f"{a.terminal} is {state}; wait for idle or pass --force")
+            session = mux.session_of(a.terminal, rec)
+            if not session:
+                raise Fail(f"{a.terminal}: no session id in the hc-sessions record or its argv; refusing to guess")
+            clash = live_named(mux, mach, local, rec.get("name"))
+            if clash:
+                raise Fail(f"{clash} is live and already named {rec.get('name')!r}; refusing before /exit")
+            labels = {k: v for k, v in (rec.get("labels") or {}).items() if k != "adw.respawn"}
+            j = {"old_address": old, "session": session, "machine": mach, "cwd": rec.get("cwd"), "name": rec.get("name"),
+                 "labels": labels, "argv": rec.get("argv") or (rec.get("foreground") or {}).get("argv") or []}
+            j["launch"] = mux.launch_argv(j["argv"], mux.respawn_argv(j["argv"], session))
+            save(j, "exiting")
+        step = {"removed": "exited"}.get(j["step"], j["step"])
+        j.setdefault("launch", mux.launch_argv(j["argv"], mux.respawn_argv(j["argv"], j["session"])))
+        target = a.terminal
+        hint = f"adw-respawn --retry {a.terminal}"
+
+        if step == "exiting":
+            rec, err = lookup(mux, target)
+            if rec is not None and rec.get("state") != "finished":
+                if mux.status_of(rec) == "blocked":
+                    err = force_exit(mux, target)
+                else:
+                    _, err = mux.prompt(target, "/exit")
+                if err:
+                    raise Fail(f"could not send /exit: {err}")
+                def finished():
+                    r, _ = lookup(mux, target)
+                    return r is None or r.get("state") == "finished"
+                if not poll(finished):
+                    raise Fail(f"{target} did not finish within {WAIT:g}s; left untouched")
+            save(j, "exited")
+            step = "exited"
+
+        if step == "started":
+            r, _ = lookup(mux, j["new_address"]) if j.get("new_address") else (None, None)
+            if r is None or r.get("state") == "finished":
+                step = "exited"
+
+        if step == "exited":
+            new = adopt(mux, j, jid)
+            if not new:
+                clear_failed(mux, j, jid, target)
+                cmd = ["run", "--bg", "--no-parent", "--outlive-parent"]
+                if j["machine"]:
+                    cmd += ["--on", j["machine"]]
+                if j["cwd"]:
+                    cmd += ["--cwd", j["cwd"]]
+                if j["name"]:
+                    cmd += ["--name", j["name"]]
+                for k, v in {**j["labels"], "adw.respawn": jid}.items():
+                    cmd += ["--label", f"{k}={v}"]
+                out, err = mux.hc(*cmd, "--json", "--", *j["launch"], timeout=60)
+                if out is None:
+                    raise Fail(f"hc run failed: {err}; {hint}")
+                new = mux.run_address(out, j["machine"])
+                if not new:
+                    raise Fail(f"hc run printed no address; {hint}")
+            if j.get("new_address") and j["new_address"] != new:
+                j["prior_addresses"] = [*j.get("prior_addresses", []), j["new_address"]]
+            j["new_address"] = new
+            save(j, "started")
+            step = "started"
+
+        if step == "started":
+            new = j["new_address"]
+            def reporting():
+                r, _ = mux.hc_json("get", new)
+                return r is not None and r.get("state") != "finished" and isinstance(r.get("status"), dict)
+            if not poll(reporting):
+                raise Fail(f"replacement {new} reported no hc status within {WAIT:g}s; old terminal left in place; {hint}")
+            new_ref = asks.pane_ref(new) if "/" not in new else new
+            moved = leads = 0
+            for src in [j["old_address"], *(asks.pane_ref(p) if "/" not in p else p for p in j.get("prior_addresses", []))]:
+                moved += asks.migrate_pane(src, new_ref, j["session"])
+                leads += move_leads(src, new_ref, j["session"])
+            try:
+                asks.retry_deliveries()
+            except Exception:
+                pass
+            save(j, "rebound")
+            print(f"{new}  ({moved} decision(s), {leads} lead registration(s) moved)")
+            step = "rebound"
+
+        if step == "rebound":
+            rec, _ = mux.hc_json("get", target)
+            if rec is not None:
+                _, err = mux.hc("rm", target)
+                if err:
+                    print(f"adw-respawn: warning: could not remove old terminal {target}: {err}", file=sys.stderr)
+        jpath.unlink(missing_ok=True)
+        return 0
+    except Fail as e:
+        print(f"adw-respawn: {e}", file=sys.stderr)
+        return 1
+
+
+NOT_FOUND = re.compile(r"not_found|no such terminal|no terminal", re.I)
+
+
+def lookup(mux, target):
+    """(record, None) when it exists, (None, None) when it is explicitly gone; any other failure raises Fail."""
+    rec, err = mux.hc_json("get", target)
+    if rec is None and not NOT_FOUND.search(err or ""):
+        raise Fail(f"cannot look up {target}: {err}")
+    return rec, None
+
+
+def live_named(mux, mach, local, name):
+    if not name:
+        return None
+    data, _ = mux.hc_json("ls")
+    for t in (data or {}).get("terminals") or []:
+        addr = t.get("address") or ""
+        if t.get("state") == "finished" or mux.split(addr) == (mach, local) or mux.split(addr)[0] != mach:
+            continue
+        rec, _ = mux.hc_json("get", addr)
+        if rec and rec.get("state") != "finished" and rec.get("name") == name:
+            return addr
+    return None
+
+
+def clear_failed(mux, j, jid, target):
+    data, _ = mux.hc_json("ls")
+    for t in (data or {}).get("terminals") or []:
+        addr = t.get("address") or ""
+        if t.get("state") != "finished" or mux.split(addr)[0] != j["machine"] or addr == target:
+            continue
+        rec, _ = mux.hc_json("get", addr)
+        if rec and (rec.get("labels") or {}).get("adw.respawn") == jid:
+            mux.hc("rm", addr)
+
+
+def force_exit(mux, target):
+    for step in (["esc"], mux.key_names("/exit"), ["enter"]):
+        _, err = mux.hc("keys", target, *step)
+        if err:
+            return err
+    return None
+
+
+def adopt(mux, j, jid):
+    data, _ = mux.hc_json("ls")
+    for t in (data or {}).get("terminals") or []:
+        addr = t.get("address") or ""
+        if t.get("state") == "finished" or mux.split(addr)[0] != j["machine"]:
+            continue
+        rec, _ = mux.hc_json("get", addr)
+        if rec and (rec.get("labels") or {}).get("adw.respawn") == jid and rec.get("state") != "finished":
+            return addr
+    return None
+
+
+def move_leads(old, new, session):
+    n = 0
+    for p in (STATE / "epics").glob("*/lead.json"):
+        try:
+            rec = json.loads(p.read_text())
+        except (OSError, ValueError):
+            continue
+        if rec.get("pane") == old and rec.get("session") == session:
+            rec["pane"] = new
+            tmp = p.with_name(f".lead.json.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(rec, indent=2))
+            tmp.replace(p)
+            n += 1
+    return n
+
+
+if __name__ == "__main__":
+    sys.exit(main())

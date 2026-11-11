@@ -19,6 +19,7 @@ Everything lives under `$ADW_HOME` (default `~/.claude/adw`): `asks/`, `status/`
 | `adw-board digest` | Needs you / Trouble / Ready / Under way, as plain text. |
 | `adw-board show <id>` | Everything about one decision id, herdr pane or epic slug. |
 | `adw-board watch` | A stream: one line per new event, plus `digest-due HH:MM` (times from `ADW_MATE_DIGEST_AT`, default `09:00,16:00`). `--once` prints the first batch of new events and exits, so it can run as a backgrounded wait that re-arms after each wake. |
+| `adw-board watchdog [--dry-run]` | The periodic chores below: defaults, retries, stall rules, compaction, one batched prompt to the first mate. |
 | `adw-board needs` | Exactly the board's Needs-you list (decisions, dialogs, open interrupts, tickets awaiting authorization), one per line. |
 | `adw-events` | The event layer: `poll`, `feed`, `tldr`, `interrupts`, `ack <id> [--by WHO] [--note TEXT]`, `reopen <id>`, `digest-post` (below). |
 | `adw-ask` | File and answer decisions (below). |
@@ -182,8 +183,19 @@ running in-tab (no background agents or shells), and its session context has pas
 it with a fresh lead that takes over with `--takeover` and picks up from the epic files. A wait of an hour or
 more uses the lower `ADW_LEAD_REFRESH_LONG_WAIT_AT` (default 80000).
 
-A lead that is idle past `ADW_LEAD_COMPACT_IDLE` seconds (default 2700) with context over `ADW_LEAD_COMPACT_AT`
-tokens (default 100000) is sent `/compact` once by `adw-board watch`; `ADW_LEAD_AUTO_COMPACT=0` turns that off.
+The watchdog compacts idle leads and the first mate whose context is large (`board/rotate.py`): idle at least 10
+minutes, context over 100000 tokens, not blocked, working, mid-draft or holding open asks, at most two per tick and one
+per session every 3 hours. Each action is logged in `$ADW_HOME/state/rotate.jsonl` and listed in the digest. Tune it in
+`$ADW_HOME/rotate.json` (`enabled`, `dry_run`, `ctx_tokens`, `max_per_tick`, `compact_gap_h`, `idle_s`); `ADW_ROTATE=0` turns it
+off and `ADW_ROTATE_EXCLUDE_MACHINES` (comma-separated) skips whole machines. The `compact-resume` hook rehydrates after the compact.
+
+### Restarting a tab
+
+`adw-respawn <terminal>` restarts an hc terminal's claude session in place: it exits the old one, launches a replacement with
+the same machine, cwd, name, labels and session, waits for it to report, moves open decisions and the lead registration, then
+removes the old terminal. A replacement that never reports leaves the old terminal alone; `--retry` resumes from the journal in
+`$ADW_HOME/state/respawn/`. It refuses a working terminal unless `--force`, and refuses a finished one: a lead that exited is relaunched (`/adw-lead <epic>` in a new tab) rather than respawned. Set `ADW_HUB=user@host` to run it through the hub from a machine
+without the checkout.
 
 ### Pins, disk alert, ignored tabs
 
@@ -193,6 +205,21 @@ tokens (default 100000) is sent `/compact` once by `adw-board watch`; `ADW_LEAD_
 - `ADW_MATE_IGNORE_CWDS` is a comma-separated list of cwd prefixes whose tabs stay out of the digest, `show` and `watch`.
 
 Agents on other machines can appear on the same board; see `docs/multi-machine.md`.
+
+## The watchdog
+
+`adw-board watchdog` (run every 5 minutes by `adw-watchdog.timer`, installed with `install.sh --systemd`; use cron or launchd elsewhere) does the
+chores nobody should have to remember, under one lock, and prompts the first mate once with a batch of anything new:
+
+- applies due `--default-after` defaults and retries undelivered answers;
+- flags tabs that went quiet (`stopped-silent`), segments building with no epic activity, epics with open work and no live lead, gated asks that have waited
+  four hours, and anything addressed to the first mate in a tab's last message;
+- runs the stall rules in `board/stall.py` (a ready segment idle for hours, an answered ask whose segment never moved, a frozen epic, a nearly finished epic that
+  stopped) and re-sends answers a lead never acted on, to the lead's current pane; `$ADW_HOME/stall.json` snoozes a rule per key;
+- compacts large idle sessions (below).
+
+Each item fires once, then again after its refire interval. Outside desk hours (`ADW_DESK_TZ`, default UTC; `ADW_DESK_HOURS`, default `8-17`, weekdays)
+the kinds that never name a new event are held for one morning summary instead of repeating. `adw-board watchdog --dry-run` prints the batch and writes nothing.
 
 ## Chain of command
 

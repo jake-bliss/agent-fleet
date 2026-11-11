@@ -149,12 +149,12 @@ if [ "$want_systemd" -eq 1 ]; then
   fi
   unit_dir="$HOME/.config/systemd/user"
   mkdir -p "$unit_dir"
-  for u in adw-events.service adw-events.timer adw-digest.service adw-digest.timer; do
+  for u in adw-events.service adw-events.timer adw-digest.service adw-digest.timer adw-watchdog.service adw-watchdog.timer; do
     cp "$REPO/systemd/$u" "$unit_dir/$u"
   done
   systemctl --user daemon-reload
-  systemctl --user enable --now adw-events.timer adw-digest.timer
-  echo "systemd: adw-events.timer polls every 2 minutes; adw-digest.timer posts at 09:00 and 17:00 host time"
+  systemctl --user enable --now adw-events.timer adw-digest.timer adw-watchdog.timer
+  echo "systemd: adw-events.timer polls every 2 minutes; adw-digest.timer posts at 09:00 and 17:00 host time; adw-watchdog.timer runs every 5 minutes"
   note "units assume ADW_HOME=\$HOME/.claude/adw; edit $unit_dir/adw-*.service if yours differs"
 fi
 

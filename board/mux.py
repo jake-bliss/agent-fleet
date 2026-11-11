@@ -4,10 +4,12 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
 import time
+import types
 from pathlib import Path
 
 HC_ID = re.compile(r"(?:[\w.-]+/)?t\w+")
@@ -284,9 +286,13 @@ def terminal_lock(pane, timeout=None):
             fcntl.flock(f, fcntl.LOCK_UN)
 
 
-def prompt(pane, text, timeout=None):
+def prompt(pane, text, timeout=None, guard=None):
+    """guard, when given, runs under the terminal lock just before any key is sent; a returned string refuses the send."""
     try:
         with terminal_lock(pane, timeout):
+            refused = guard() if guard else None
+            if refused:
+                return None, refused
             return type_text(pane, text)
     except TimeoutError as e:
         return None, str(e)
@@ -311,6 +317,34 @@ def type_text(pane, text):
     return hc("keys", pane, "enter")
 
 
+def last_turn(text):
+    """(the agent's last turn, the unsent draft on the prompt line) from a screen read."""
+    lines = text.splitlines()
+    prompt = max((i for i, l in enumerate(lines) if l.startswith("❯")), default=len(lines))
+    start = max((i for i, l in enumerate(lines[:prompt]) if l.startswith("⏺ ")), default=0)
+    return "\n".join(lines[start:prompt]), (lines[prompt][1:].strip() if prompt < len(lines) else "")
+
+
+def idle_guard(pane, session, m=None):
+    """Returns a guard for prompt(): refuses unless pane is idle or done on session (None skips that check), its screen reads, and no draft sits on the prompt line.
+
+    m supplies get, read and last_turn; it defaults to this module.
+    """
+    m = m or types.SimpleNamespace(get=lambda p: get(p), read=lambda p, n: read(p, n), last_turn=lambda t: last_turn(t))
+
+    def guard():
+        info = m.get(pane)
+        if not info or info["status"] not in ("idle", "done") or (session is not None and info["session"] != session):
+            return f"{pane} is no longer idle on the same session; not typing"
+        screen, err = m.read(pane, 60)
+        if screen is None or err:
+            return f"{pane} screen unreadable ({err}); not typing"
+        if m.last_turn(screen)[1]:
+            return f"{pane} has an unsent draft; not typing"
+        return None
+    return guard
+
+
 def read(pane, lines):
     return hc("read", pane, "--lines", str(lines))
 
@@ -321,6 +355,47 @@ def keys(pane, names):
 
 def focus(pane):
     return None, NO_FOCUS
+
+
+def fleet_claude_argv(settings=True, session=None):
+    """The one definition of how fleet sessions launch claude: bypass mode, the spawned-settings file for leads and
+    sessions, and --resume when restarting one."""
+    argv = ["claude", "--dangerously-skip-permissions"]
+    if settings:
+        argv += ["--settings", str(ADW_HOME / "spawned-settings.json")]
+    return argv + (["--resume", session] if session else [])
+
+
+def shell_wrapped(argv):
+    return len(argv or []) == 3 and Path(argv[0]).name in ("sh", "bash", "zsh") and argv[1].startswith("-") and "c" in argv[1]
+
+
+def launch_argv(old_argv, inner):
+    """The argv that starts `inner` the way the old terminal was started: same shell and flags when it was a shell wrapper, else direct."""
+    return [old_argv[0], old_argv[1], "exec " + shlex.join(inner)] if shell_wrapped(old_argv) else list(inner)
+
+
+def respawn_argv(old, session):
+    """The old terminal's own claude argv without --resume/--continue, then --resume <session>, with bypass added if absent."""
+    if shell_wrapped(old):
+        try:
+            inner = shlex.split(old[2])
+        except ValueError:
+            inner = []
+        old = inner[1:] if inner[:1] == ["exec"] else inner
+    if not old or Path(old[0]).name != "claude":
+        old = fleet_claude_argv()
+    out, skip = [], False
+    for a in old:
+        if skip:
+            skip = False
+        elif a == "--resume":
+            skip = True
+        elif a != "--continue":
+            out.append(a)
+    if "--dangerously-skip-permissions" not in out:
+        out.insert(1, "--dangerously-skip-permissions")
+    return out + ["--resume", session]
 
 
 def run_address(out, on):

@@ -2,7 +2,7 @@
 """adw-status: declare what this agent tab is doing, so the ADW Board can tell waiting from stalled.
 
 Usage:
-  adw-status waiting "<what>" [--until 2026-01-01T22:00Z | --for 30m] [--refreshable]
+  adw-status waiting "<what>" [--until 2026-01-01T22:00Z | --for 30m] [--refreshable] [--mention]
   adw-status progress "<text>"
   adw-status done "<text>"
   adw-status failed "<text>"
@@ -24,6 +24,9 @@ ADW_HOME = Path(os.environ.get("ADW_HOME") or Path.home() / ".claude/adw")
 STATUS = ADW_HOME / "status"
 EPICS = ADW_HOME / "epics"
 KINDS = ("waiting", "progress", "done", "failed")
+READ_KINDS = KINDS + ("ended",)
+HUMAN = re.compile(r"\bhuman\b", re.I)
+ASK_ID = re.compile(r"\bd-[0-9a-f]{6}\b")
 LINE = re.compile(r"^(\S+) (\w+): (.*?)(?: until (\S+))?$")
 
 
@@ -50,6 +53,10 @@ def load_asks():
     asks = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(asks)
     return asks
+
+
+def is_mate(pane):
+    return any(x.get("name") == "first-mate" and x.get("pane_id") == pane for x in load_asks().list_agents() or [])
 
 
 def session_live(session):
@@ -82,8 +89,8 @@ def rebind_asks(epic, prev, session, pane):
     return moved
 
 
-def last_event(session):
-    p = STATUS / f"{session}.log"
+def last_event(session, status_dir=None):
+    p = Path(status_dir or STATUS) / f"{session}.log"
     if not session or not p.exists():
         return None
     with open(p, "rb") as f:
@@ -92,7 +99,7 @@ def last_event(session):
         lines = f.read().decode("utf-8", "replace").splitlines()
     for line in reversed(lines):
         m = LINE.match(line.strip())
-        if m and m.group(2) in KINDS:
+        if m and m.group(2) in READ_KINDS:
             return {"at": parse_iso(m.group(1)), "kind": m.group(2), "text": m.group(3),
                     "until": parse_iso(m.group(4)) if m.group(4) else None}
     return None
@@ -115,6 +122,7 @@ def main():
     ap.add_argument("--pane")
     ap.add_argument("--refreshable", action="store_true")
     ap.add_argument("--takeover", action="store_true")
+    ap.add_argument("--mention", action="store_true", help="the text names the human but does not wait on them")
     a = ap.parse_args()
     pane = a.pane or load_asks().own_pane()
     if not pane:
@@ -148,6 +156,9 @@ def main():
     text = " ".join(a.text.split())
     if not text:
         raise SystemExit("adw-status: say what, e.g. adw-status waiting \"CI on the acme-api PR\" --for 30m")
+    if a.kind == "waiting" and HUMAN.search(text) and not ASK_ID.search(text) and not a.mention and not is_mate(pane):
+        raise SystemExit("adw-status: a wait on the human needs its adw-ask id in the text, so it shows in their Needs-you "
+                         "(file it with adw-ask new). If the human is only mentioned, pass --mention.")
     if a.refreshable:
         text += " [refreshable]"
     line = f"{iso(datetime.now(timezone.utc))} {a.kind}: {text}"

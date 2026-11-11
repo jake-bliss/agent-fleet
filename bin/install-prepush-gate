@@ -117,9 +117,10 @@ RUN
   chmod +x "$ours/_run"
 
   {
-    printf '#!/usr/bin/env bash\nset -e\n"%s" "$@" || exit $?\n' "$GATE"
+    printf '#!/usr/bin/env bash\nset -e\nstdin_f=$(mktemp); trap '"'"'rm -f "$stdin_f"'"'"' EXIT; cat > "$stdin_f"\n'
+    printf '"%s" "$@" < "$stdin_f" || exit $?\n' "$GATE"
     if [ "$chain_prepush" = false ]; then printf 'exit 0\n'
-    else printf 'exec "%s/_run" pre-push "$@"\n' "$ours"; fi
+    else printf '"%s/_run" pre-push "$@" < "$stdin_f"\n' "$ours"; fi
   } > "$ours/pre-push"
   chmod +x "$ours/pre-push"
 

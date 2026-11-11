@@ -29,6 +29,10 @@ def emit(decision, **extra):
 
 SEPARATORS = r"&&|\|\||[;&|\n]"
 
+if re.search(r"\b(pkill|killall)\b[^;&|\n]*(preflight|ci-preflight)", cmd):
+    emit("deny", permissionDecisionReason="pkill/killall on a preflight pattern also kills every other tab's ci-preflight "
+         "on this box. Kill your own run by PID or its process group only: the PID you started, `kill -- -<pgid>`; "
+         "check its cwd with `lsof -p <pid> | awk '$4==\"cwd\"'` first.")
 if "# raw-ok" in cmd:
     sys.exit(0)
 

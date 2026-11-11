@@ -31,6 +31,11 @@ adw-ask new --class <class> --title "<one line>" --epic <slug> --body-file /tmp/
   decision whose merge option starts with the token `ship <repo>#<n>@<head sha>`. When that option is
   chosen, `pr-ship <pr> --approved-by <ask-id>` performs the merge; any later push voids the approval. `"merge": "green"` repos need no approval (`pr-ship` merges once
   CI is green); repos absent from `pr-tools.json` are refused.
+- When the review bot's cycle is done without approval and every finding is answered (fixed in a later commit, a nit, or a verified false positive),
+  `pr-ship <pr> --residual "<reason>"` merges after checking the review receipts and the findings ledger; it refuses a high-risk PR. For a change whose every
+  new path sits behind a flag that is off in production, `pr-ship <pr> --flagged <flag-key>` applies the same checks plus a recorded flag-coverage review.
+  Neither combines with `--approved-by`.
+  Both approve first as the account named in `pr-tools.json` `bot_approver` (`{"login": ..., "gh": [command...]}`; `gh` is required, since the default gh is the author and cannot approve; an `ssh` wrapper gets the review body quoted, a plain command does not). See `config/pr-tools.example.json`.
 
 ## Declare long-running state with `adw-status`
 

@@ -690,6 +690,354 @@ def run_json(**over):
     return base
 
 
+REVIEWS = json.dumps([
+    {"id": 11, "user": {"login": "approver-bot[bot]"}, "state": "APPROVED"},
+    {"id": 12, "user": {"login": "someone-else"}, "state": "APPROVED"},
+    {"id": 13, "user": {"login": "approver-bot"}, "state": "COMMENTED"},
+    {"id": 14, "user": {"login": "approver-bot"}, "state": "APPROVED"}])
+
+
+def gh_reply(cmd, merge_fails=False, dismiss_fails=False, list_fails=False, reviews=None):
+    """Fake subprocess.run for the gh/ssh calls pr-ship makes after a bot approve."""
+    bad = (merge_fails and cmd[:3] == ["gh", "pr", "merge"]) or (dismiss_fails and cmd[:4] == ["gh", "api", "-X", "PUT"]) \
+        or (list_fails and "--paginate" in cmd)
+    out = (REVIEWS if reviews is None else reviews) if cmd[:2] == ["gh", "api"] and "--paginate" in cmd else ""
+    return mock.Mock(returncode=1 if bad else 0, stdout=out, stderr="boom" if bad else "")
+
+
+def dismissed_ids(calls):
+    return [c[4].split("/")[-2] for c in calls if c[:4] == ["gh", "api", "-X", "PUT"]]
+
+
+class ResidualHarness:
+    F = "acme/app"
+    HEAD = "abc1234"
+
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.dir.cleanup)
+        self.ledger = os.path.join(self.dir.name, "ledger.jsonl")
+        self.write_ledger([("codex", "pass", self.HEAD), ("claude", "pass", "old1")])
+        self.seen = []
+        patcher = mock.patch.dict(ship.ps.CONFIG, {"bot_approver": {"login": "approver-bot", "gh": ["ssh", "approver-host", "gh"]}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_ledger(self, rows):
+        with open(self.ledger, "w") as f:
+            for who, verdict, sha, *via in rows:
+                f.write(json.dumps({"who": who, "verdict": verdict, "sha": sha, **({"via": via[0]} if via else {})}) + "\n")
+
+    def finding(self, **over):
+        return {"path": "a.rb", "url": "https://x/1", "author": "review-bot", "severity": "minor", "replied": True,
+                "replies": ["fixed"], "original_commit": "old1", **over}
+
+    def pr(self, **over):
+        fp = {"approved": False, "verdict_head": self.HEAD, "high_risk": False, "score": "4", "label": "Findings"}
+        return info(**{"head": self.HEAD, "bot": fp, "review_decision": "REVIEW_REQUIRED", "merge_state": "BLOCKED",
+                       "branch": "claude/x", **over})
+
+    def accepted_ask(self, **over):
+        return {"id": "d-abc123", "status": "answered", "title": "Accept app#7 risk?", "body": "",
+                "options": [{"key": "a", "label": "Accept the risk"}, {"key": "b", "label": "Fix it first"}],
+                "answer": {"choice": "a", "by": "human"}, **over}
+
+    def go(self, infos=None, findings=None, asks=None, argv=None, freeze_after=99, dismiss_fails=False, sleep=None, mode=None, **over):
+        calls, logs, freezes = [], [], []
+        self.printed = printed = []
+        after = {"review_decision": "APPROVED", "merge_state": "CLEAN"} if "review_decision" not in over else {}
+        seq = iter(infos or [self.pr(**over)] * 2 + [self.pr(**{**over, **after})] * 3)
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            return gh_reply(cmd, dismiss_fails=dismiss_fails)
+
+        def fake_freeze(r):
+            freezes.append(1)
+            return "release" if len(freezes) > freeze_after else None
+
+        def fake_ask(i):
+            if i not in (asks or {}):
+                raise ship.ps.PrError("no such ask")
+            return asks[i]
+
+        with mock.patch.dict(os.environ, {"PR_SHIP_REVIEW_LEDGER": self.ledger}), \
+                mock.patch.object(ship.ps, "build", lambda r, n, runs=False: next(seq)), \
+                mock.patch.object(ship.ps, "gh_rest", lambda path: [
+                    {"sha": "old1", "commit": {"author": {"date": "2026-10-01T00:00:00Z"}}},
+                    {"sha": self.HEAD, "commit": {"author": {"date": "2026-10-03T00:00:00Z"}}}]), \
+                mock.patch.object(ship.ps, "open_findings", lambda r, n, resolved_blocking=False: self.seen.append(resolved_blocking) or (findings if findings is not None else [])), \
+                mock.patch.object(ship, "merge_freeze", fake_freeze), \
+                mock.patch.object(ship, "load_ask", fake_ask), \
+                mock.patch.object(ship, "log_override", lambda phase, entry, *a: logs.append((phase, entry))), \
+                mock.patch.object(ship.subprocess, "run", fake_run), mock.patch.object(ship.time, "sleep", sleep or mock.DEFAULT), \
+                mock.patch("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a)))):
+            code = ship.main(["7", "-R", self.F] + (mode or ["--residual", "false positive, verified"]) + (argv or []))
+        return code, calls, logs
+
+
+class ResidualTest(ResidualHarness, unittest.TestCase):
+    def test_happy_path_approves_then_merges_and_logs(self):
+        accepted = {"d-abc123": self.accepted_ask()}
+        findings = [self.finding(), self.finding(severity="blocking", replies=["Approver accepted this, see d-abc123"])]
+        code, calls, logs = self.go(findings=findings, asks=accepted)
+        self.assertEqual(code, 0)
+        self.assertEqual([c[:5] if c[0] == "ssh" else c[:3] for c in calls],
+                         [["ssh", "approver-host", "gh", "pr", "review"], ["gh", "pr", "merge"]])
+        self.assertIn("--approve", calls[0])
+        self.assertEqual(calls[0][-1], "'pr-ship residual: review bot 4/5 unapproved, findings answered, CI green - false positive, verified'")
+        self.assertEqual(calls[1], ["gh", "pr", "merge", "7", "-R", self.F, "--squash", "--match-head-commit", self.HEAD])
+        self.assertEqual([(p, e["stage"]) for p, e in logs], [("residual", "pending"), ("residual", "merged")])
+        self.assertEqual(logs[0][1]["asks"], ["d-abc123"])
+        self.assertEqual(logs[0][1]["reason"], "false positive, verified")
+
+    def test_freeze_appearing_before_clean_merge_refuses(self):
+        code, calls, _ = self.go(review_decision=None, merge_state="CLEAN", freeze_after=2)
+        self.assertEqual(code, 4)
+        self.assertEqual(calls, [])
+
+    def test_no_approve_when_review_not_required(self):
+        code, calls, _ = self.go(review_decision=None, merge_state="CLEAN")
+        self.assertEqual(code, 0)
+        self.assertEqual([c[:3] for c in calls], [["gh", "pr", "merge"]])
+
+    def test_dry_run_no_mutation(self):
+        code, calls, logs = self.go(argv=["--dry-run"])
+        self.assertEqual((code, calls, logs), (0, [], []))
+
+    def refused(self, **kw):
+        code, calls, logs = self.go(**kw)
+        self.assertEqual(code, 4)
+        self.assertEqual((calls, logs), ([], []))
+
+    def test_refuses_high_risk(self):
+        pr = self.pr()
+        pr["bot"]["high_risk"] = True
+        self.refused(infos=[pr])
+
+    def test_refuses_without_codex_receipt_on_head(self):
+        self.write_ledger([("codex", "pass", "old1"), ("claude", "pass", "old1")])
+        self.refused()
+
+    def test_refuses_without_claude_receipt(self):
+        self.write_ledger([("codex", "pass", self.HEAD)])
+        self.refused()
+
+    def test_claude_low_tier_skip_counts(self):
+        self.write_ledger([("codex", "pass", self.HEAD), ("claude", "skip", "old1")])
+        self.assertEqual(self.go()[0], 0)
+
+    def test_refuses_unreplied_finding(self):
+        self.refused(findings=[self.finding(replied=False, replies=[])])
+
+    def test_refuses_critical_reply_without_approver_ask(self):
+        findings = [self.finding(severity="blocking", replies=["ack, see d-abc123"])]
+        self.refused(findings=findings, asks={"d-abc123": self.accepted_ask(answer={"choice": "a", "by": "mate"})})
+        self.refused(findings=findings, asks={})
+        self.refused(findings=[self.finding(severity=None, replies=["will not fix"])])
+
+    def test_critical_false_positive_with_file_line_merges(self):
+        for first in ("\U0001F6A8 **Critical** (correctness)", "\u26a0\ufe0f **Warning** (security)"):
+            finding = self.finding(severity=ps.finding_severity(first + "\nbody"),
+                                   replies=["False positive: app/models/a.rb:42 already scopes the tenant"])
+            self.assertEqual(finding["severity"], "blocking")
+            code, calls, _ = self.go(findings=[finding])
+            self.assertEqual(code, 0, first)
+            self.assertEqual(calls[-1][:3], ["gh", "pr", "merge"])
+
+    def test_false_positive_without_file_line_refused(self):
+        finding = self.finding(severity=ps.finding_severity("\U0001F6A8 **Critical** (correctness)"),
+                               replies=["False positive, trust me"])
+        self.refused(findings=[finding])
+
+    def test_waits_on_ci_pending(self):
+        code, calls, logs = self.go(ci={"total": 5, "ok": 4, "pending": 1, "failed": []})
+        self.assertEqual((code, calls, logs), (3, [], []))
+
+    def test_waits_when_not_clean(self):
+        self.assertEqual(self.go(merge_state="BEHIND")[0], 3)
+
+    def test_blocked_without_review_required_waits(self):
+        for decision in ("APPROVED", None):
+            code, calls, _ = self.go(review_decision=decision, merge_state="BLOCKED")
+            self.assertEqual((code, calls), (3, []))
+
+    def test_reason_sanitized_for_approver_command(self):
+        code, calls, _ = self.go(mode=["--residual", "x; rm -rf (y)"])
+        self.assertEqual(calls[0][:3], ["ssh", "approver-host", "gh"])
+        self.assertEqual(calls[0][-1], "'pr-ship residual: review bot 4/5 unapproved, findings answered, CI green - x rm -rf y'")
+
+    def test_post_approve_not_clean_aborts_before_merge(self):
+        pr = self.pr()
+        code, calls, logs = self.go(infos=[pr] * 20)
+        self.assertEqual(code, 3)
+        self.assertEqual(dismissed_ids(calls), ["11", "14"])
+        self.assertEqual(logs[-1][1]["stage"], "approved-withdrawn")
+
+    def test_changes_requested_waits_without_ssh(self):
+        cr = self.pr(review_decision="CHANGES_REQUESTED")
+        code, calls, _ = self.go(infos=[cr] * 3)
+        self.assertEqual((code, calls), (3, []))
+
+    def test_approve_raising_still_dismisses(self):
+        real = ship.run
+
+        def failing(cmd):
+            if cmd[0] == "ssh":
+                raise ship.ps.PrError("ssh reset")
+            return real(cmd)
+
+        with mock.patch.object(ship, "run", failing):
+            code, calls, logs = self.go()
+        self.assertEqual((code, sorted(set(dismissed_ids(calls)))), (5, ["11", "14"]))
+        self.assertEqual(logs[-1][1]["stage"], "approved-withdrawn")
+
+    def test_merge_error_dismisses_residual(self):
+        real = ship.run
+
+        def failing(cmd):
+            if cmd[:3] == ["gh", "pr", "merge"]:
+                raise ship.ps.PrError("merge failed")
+            return real(cmd)
+
+        with mock.patch.object(ship, "run", failing):
+            code, calls, logs = self.go()
+        self.assertEqual((code, dismissed_ids(calls)), (5, ["11", "14"]))
+        self.assertEqual(logs[-1][1]["stage"], "approved-withdrawn")
+
+    def test_freeze_appearing_before_merge_dismisses_and_refuses(self):
+        code, calls, logs = self.go(freeze_after=3)
+        self.assertEqual(code, 4)
+        self.assertEqual(dismissed_ids(calls), ["11", "14"])
+        self.assertNotIn(["gh", "pr", "merge"], [c[:3] for c in calls])
+
+    def test_sigterm_during_settle_dismisses(self):
+        import signal
+
+        def term(_):
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+        code, calls, logs = self.go(infos=[self.pr()] * 20, sleep=term)
+        self.assertEqual((code, dismissed_ids(calls)), (5, ["11", "14"]))
+
+    def test_dismiss_failure_exits_5_unmerged(self):
+        code, calls, logs = self.go(infos=[self.pr()] * 20, dismiss_fails=True)
+        self.assertEqual(code, 5)
+        self.assertEqual(logs[-1][1]["stage"], "approved-unmerged")
+
+    def test_accept_ask_must_name_this_pr_and_option(self):
+        finding = self.finding(severity="blocking", replies=["Approver accepted, d-abc123"])
+        self.refused(findings=[finding], asks={"d-abc123": self.accepted_ask(title="Accept app#8 risk?")})
+        self.refused(findings=[finding], asks={"d-abc123": self.accepted_ask(answer={"choice": "b", "by": "human"})})
+        url = self.accepted_ask(title="risk", body="https://github.com/acme/app/pull/7")
+        self.assertEqual(self.go(findings=[finding], asks={"d-abc123": url})[0], 0)
+
+    def test_negated_false_positive_refused(self):
+        finding = self.finding(severity="blocking", replies=["Not a false positive: real bug at x.rb:88"])
+        self.refused(findings=[finding])
+
+    def test_resolved_blocking_thread_needs_same_proof(self):
+        code, calls, logs = self.go(findings=[self.finding(severity="blocking", replies=["won't fix"])])
+        self.assertTrue(self.seen and all(self.seen))
+        self.assertEqual(code, 4)
+
+    def test_resolved_blocking_thread_citing_a_pr_commit_counts_as_fixed(self):
+        f = self.finding(severity="blocking", resolved=True, replies=[f"Fixed in {self.HEAD[:9]}"])
+        self.assertEqual(self.go(findings=[f])[0], 0)
+
+    def test_open_or_foreign_commit_citation_is_not_a_fix(self):
+        self.assertEqual(self.go(findings=[self.finding(severity="blocking", replies=["Fixed in abcdef12"])])[0], 4)
+        self.assertEqual(self.go(findings=[self.finding(severity="blocking", resolved=True, replies=["Fixed in abcdef12"])])[0], 4)
+        still = self.finding(severity="blocking", resolved=True, replies=[f"Still broken after {self.HEAD}, not fixed"])
+        self.assertEqual(self.go(findings=[still])[0], 4)
+
+    def test_fixed_in_later_pr_commit_counts_on_unresolved_thread(self):
+        f = self.finding(severity="blocking", resolved=False, replies=[f"Fixed in {self.HEAD[:9]}"])
+        self.assertEqual(self.go(findings=[f])[0], 0)
+
+    def test_fixed_in_the_reviewed_commit_itself_is_refused(self):
+        f = self.finding(severity="blocking", resolved=False, replies=["Fixed in old1"])
+        self.assertEqual(self.go(findings=[f])[0], 4)
+
+    def test_fixed_in_with_unknown_original_commit_is_refused(self):
+        f = self.finding(severity="blocking", replies=[f"Fixed in {self.HEAD[:9]}"], original_commit="gone")
+        self.assertEqual(self.go(findings=[f])[0], 4)
+
+    def test_rebased_away_original_counts_a_fix_authored_after_the_finding(self):
+        f = self.finding(severity="blocking", replies=[f"Fixed in {self.HEAD[:9]}"], original_commit="gone",
+                         created="2026-10-02T00:00:00Z")
+        self.assertEqual(self.go(findings=[f])[0], 0)
+
+    def test_rebased_away_original_refuses_a_commit_authored_before_the_finding(self):
+        early = self.finding(severity="blocking", replies=["Fixed in old1"], original_commit="gone", created="2026-10-02T00:00:00Z")
+        self.assertEqual(self.go(findings=[early])[0], 4)
+        late = self.finding(severity="blocking", replies=[f"Fixed in {self.HEAD[:9]}"], original_commit="gone",
+                            created="2026-10-04T00:00:00Z")
+        self.assertEqual(self.go(findings=[late])[0], 4)
+
+    def test_resolved_outdated_critical_without_reply_is_refused(self):
+        f = self.finding(severity="blocking", resolved=True, outdated=True, replied=False, replies=[])
+        self.assertEqual(self.go(findings=[f])[0], 4)
+
+    def test_verdict_on_older_head_merges(self):
+        fp = {"approved": False, "verdict_head": "old1", "high_risk": False, "score": None, "label": "Findings", "rounds": 1}
+        self.assertEqual(self.go(bot=fp, findings=[self.finding()])[0], 0)
+
+    def test_no_bot_review_waits(self):
+        fp = {"approved": False, "verdict_head": None, "high_risk": False, "score": None, "label": None, "rounds": 0}
+        code, calls, _ = self.go(bot=fp)
+        self.assertEqual((code, calls), (3, []))
+
+    def test_unverified_codex_row_refused(self):
+        with open(self.ledger, "w") as f:
+            for who, sha, unv in (("codex", self.HEAD, True), ("claude", "old1", False)):
+                f.write(json.dumps({"who": who, "verdict": "pass", "sha": sha, "unverified": unv}) + "\n")
+        self.refused()
+
+    def test_ancestor_claude_skip_still_accepted(self):
+        with open(self.ledger, "w") as f:
+            for who, v, sha in (("codex", "pass", self.HEAD), ("claude", "skip", "old1")):
+                f.write(json.dumps({"who": who, "verdict": v, "sha": sha, "unverified": False}) + "\n")
+        self.assertEqual(self.go()[0], 0)
+
+    def test_head_moving_during_approval_is_logged_and_waits(self):
+        moved = self.pr(head="f" * 40, review_decision="APPROVED", merge_state="CLEAN")
+        code, calls, logs = self.go(infos=[self.pr()] * 2 + [moved] * 3, findings=[self.finding()])
+        self.assertEqual(code, 3)
+        self.assertIn("approved-moved-head", [e.get("stage") for _, e in logs])
+        self.assertEqual(logs[-1][1]["stage"], "approved-withdrawn")
+        self.assertEqual(dismissed_ids(calls), ["11", "14"])
+        self.assertNotIn(["gh", "pr", "merge"], [c[:3] for c in calls])
+
+    def test_mutually_exclusive_with_approved_by(self):
+        self.assertEqual(self.go(argv=["--approved-by", "d-1"])[0], 5)
+
+
+class OpenFindingsTest(unittest.TestCase):
+    def threads(self):
+        def t(body, resolved, outdated):
+            return {"isResolved": resolved, "isOutdated": outdated, "path": "a.rb", "line": 1, "originalLine": 1,
+                    "comments": {"totalCount": 1, "nodes": [{"author": {"login": "review-bot"}, "body": body, "url": "u"}]}}
+        return "me-dev", [t("\U0001F6A8 **Critical** (x)", True, False), t("\U0001F6A8 **Critical** (x)", True, True),
+                              t("Nit: y", True, False), t("\u26a0\ufe0f **Warning** (z)", False, False)]
+
+    def test_resolved_blocking_only_when_asked(self):
+        with mock.patch.object(ps, "fetch_findings", lambda r, n: self.threads()):
+            self.assertEqual(len(ps.open_findings("o/r", 1)), 1)
+            self.assertEqual(len(ps.open_findings("o/r", 1, resolved_blocking=True)), 3)
+
+
+class FindingSeverityTest(unittest.TestCase):
+    def test_parse(self):
+        self.assertEqual(ps.finding_severity("**Critical**: tenant leak"), "blocking")
+        self.assertEqual(ps.finding_severity("⚠️ Warning - n+1"), "blocking")
+        self.assertEqual(ps.finding_severity("\U0001F6A8 **Critical** (correctness)"), "blocking")
+        self.assertEqual(ps.finding_severity("\u26a0\ufe0f **Warning** (security)"), "blocking")
+        self.assertEqual(ps.finding_severity("Nit: rename"), "minor")
+        self.assertEqual(ps.finding_severity("Suggestion (minor): rename"), "minor")
+        self.assertIsNone(ps.finding_severity("This looks wrong"))
+
+
 class RunsTest(unittest.TestCase):
     R = "o/r"
 
@@ -1149,5 +1497,205 @@ class EpicReportTest(unittest.TestCase):
                 self.assertEqual(self.er.epic_born(d, (plan,)), 1234)
 
 
-if __name__ == "__main__":
-    unittest.main()
+class FlaggedTest(ResidualHarness, unittest.TestCase):
+    KEY = "new_checkout.v2"
+
+    def setUp(self):
+        super().setUp()
+        self.write_ledger([("codex", "pass", self.HEAD), ("claude", "pass", "old1")])
+
+    def pr(self, **over):
+        return super().pr(**{"body": f"Behind {self.KEY}, off in prod", **over})
+
+    def flagged(self, key=None, **kw):
+        return self.go(mode=["--flagged", key or self.KEY], **kw)
+
+    def flagged_refused(self, **kw):
+        code, calls, logs = self.flagged(**kw)
+        self.assertEqual((code, calls, logs), (4, [], []))
+
+    def test_merges_despite_high_risk_and_logs_flagged(self):
+        pr = self.pr()
+        pr["bot"]["high_risk"] = True
+        code, calls, logs = self.flagged(infos=[pr] * 2 + [{**pr, "review_decision": "APPROVED", "merge_state": "CLEAN"}] * 3)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls[0][-1], f"'pr-ship flagged: new behaviour behind {self.KEY}, findings answered, CI green'")
+        self.assertEqual(calls[-1], ["gh", "pr", "merge", "7", "-R", self.F, "--squash", "--match-head-commit", self.HEAD])
+        self.assertEqual([(p, e["stage"], e["flag"]) for p, e in logs], [("flagged", "pending", self.KEY), ("flagged", "merged", self.KEY)])
+        self.assertTrue(any(p.startswith("monitor: ") and "--flagged " + self.KEY in p for p in self.printed))
+
+    def test_no_watch_skips_monitor_line(self):
+        code, _, _ = self.flagged(argv=["--no-watch"])
+        self.assertEqual(code, 0)
+        self.assertFalse(any(p.startswith(("watch:", "monitor:")) for p in self.printed))
+
+    def test_claude_skip_refuses(self):
+        self.write_ledger([("codex", "pass", self.HEAD), ("claude", "skip", "old1")])
+        self.flagged_refused()
+
+    def test_missing_opus_refusal_names_reviewer_and_receipt_command(self):
+        self.write_ledger([("codex", "pass", self.HEAD), ("claude", "skip", "old1")])
+        self.flagged_refused()
+        text = "\n".join(self.printed)
+        self.assertIn("Run the Opus reviewer on this head", text)
+        self.assertIn("review-receipt claude pass", text)
+
+    def test_carried_claude_pass_after_opus_fail_refuses(self):
+        self.write_ledger([("claude", "pass", "old1"), ("claude", "fail", "old1"), ("codex", "pass", self.HEAD),
+                           ("claude", "pass", self.HEAD, "codex-delta")])
+        self.flagged_refused()
+
+    def write_mode_rows(self, sha):
+        with open(self.ledger, "w") as f:
+            f.write(json.dumps({"who": "codex", "verdict": "pass", "sha": self.HEAD}) + "\n")
+            f.write(json.dumps({"who": "claude", "verdict": "pass", "sha": sha, "mode": "flag-check"}) + "\n")
+
+    def test_flag_check_pass_on_an_ancestor_refuses(self):
+        self.write_mode_rows("old1")
+        self.flagged_refused()
+
+    def test_flag_check_pass_on_head_merges(self):
+        self.write_mode_rows(self.HEAD)
+        code, _, _ = self.flagged(infos=[self.pr()] * 2 + [{**self.pr(), "review_decision": "APPROVED", "merge_state": "CLEAN"}] * 3)
+        self.assertEqual(code, 0)
+
+    def test_flag_check_pass_on_an_ancestor_does_not_count_for_any_path(self):
+        self.write_mode_rows("old1")
+        with mock.patch.dict(os.environ, {"PR_SHIP_REVIEW_LEDGER": self.ledger}):
+            self.assertEqual(ship.review_receipts(self.HEAD, ["old1"]), ("pass", "none"))
+            self.write_mode_rows(self.HEAD)
+            self.assertEqual(ship.review_receipts(self.HEAD, ["old1"]), ("pass", "pass"))
+
+    def write_carried_rows(self, fc_sha=None):
+        rows = [{"who": "claude", "verdict": "fail", "sha": "old1"}, {"who": "codex", "verdict": "pass", "sha": self.HEAD},
+                {"who": "claude", "verdict": "pass", "sha": self.HEAD, "via": "codex-delta"}]
+        if fc_sha:
+            rows.append({"who": "claude", "verdict": "pass", "sha": fc_sha, "mode": "flag-check", "confirms": "flag-coverage"})
+        with open(self.ledger, "w") as f:
+            f.writelines(json.dumps(r) + "\n" for r in rows)
+
+    def test_carried_full_pass_plus_head_flag_check_merges(self):
+        self.write_carried_rows(self.HEAD)
+        code, _, _ = self.flagged(infos=[self.pr()] * 2 + [{**self.pr(), "review_decision": "APPROVED", "merge_state": "CLEAN"}] * 3)
+        self.assertEqual(code, 0)
+
+    def test_carried_full_pass_alone_refuses(self):
+        self.write_carried_rows()
+        self.flagged_refused()
+
+    def test_carried_full_pass_plus_ancestor_flag_check_refuses(self):
+        self.write_carried_rows("old1")
+        self.flagged_refused()
+
+    def test_flag_check_alone_is_not_the_full_half(self):
+        self.write_mode_rows(self.HEAD)
+        with mock.patch.dict(os.environ, {"PR_SHIP_REVIEW_LEDGER": self.ledger}):
+            self.assertEqual(ship.review_receipts(self.HEAD, ["old1"], full_only=True), ("pass", "none"))
+
+    def test_direct_opus_pass_after_fail_merges(self):
+        self.write_ledger([("claude", "fail", "old1"), ("codex", "pass", self.HEAD), ("claude", "pass", self.HEAD)])
+        code, _, _ = self.flagged(infos=[self.pr()] * 2 + [{**self.pr(), "review_decision": "APPROVED", "merge_state": "CLEAN"}] * 3)
+        self.assertEqual(code, 0)
+
+    def test_body_without_key_refuses(self):
+        self.flagged_refused(body="no flag here")
+        self.flagged_refused(body=self.KEY.upper())
+        self.flagged_refused(key="checkout", body="uses checkout_v2 only")
+        self.flagged_refused(key="checkout", body="uses checkout.v2 only")
+
+    def test_bad_key_refuses(self):
+        for key in ("a", "ab", "_bad", "has space", "x" * 81, "a;b"):
+            self.flagged_refused(key=key, body=key)
+
+    def test_merge_freeze_refuses(self):
+        self.flagged_refused(freeze_after=-1)
+
+    def test_freeze_appearing_before_merge_refuses(self):
+        code, calls, _ = self.flagged(freeze_after=3)
+        self.assertEqual(code, 4)
+        self.assertNotIn(["gh", "pr", "merge"], [c[:3] for c in calls])
+
+    def test_unanswered_critical_refuses(self):
+        self.flagged_refused(findings=[self.finding(severity="blocking", replies=["will not fix"])])
+
+    def test_key_as_word_in_prose_passes(self):
+        self.assertEqual(self.flagged(key="checkout", body="Gated by checkout, off in prod.")[0], 0)
+        self.assertEqual(self.flagged(key="checkout", body="flag (checkout).")[0], 0)
+
+    def test_other_gates_still_refuse(self):
+        self.flagged_refused(draft=True)
+        self.flagged_refused(author="someone-else")
+        self.flagged_refused(base="release")
+        pr = self.pr()
+        pr["bot"] = {"approved": False, "verdict_head": None, "high_risk": False}
+        self.assertEqual(self.flagged(infos=[pr] * 5)[0], 3)
+        self.assertEqual(self.flagged(merge_state="BEHIND")[0], 3)
+
+
+class FlagDarkAcceptTest(FlaggedTest):
+    WARN = "Accepted (flag-dark): off in prod, reviewed"
+
+    def warning(self, reply=None, **over):
+        return self.finding(**{"severity": "blocking", "level": "warning", "replies": [reply or self.WARN], **over})
+
+    def test_warning_accepted_flag_dark_merges_and_logs_url(self):
+        code, _, logs = self.flagged(findings=[self.warning()])
+        self.assertEqual(code, 0)
+        self.assertEqual(logs[0][1]["flag_dark_accepted"], ["https://x/1"])
+
+    def test_leading_markdown_and_case_ok(self):
+        self.assertEqual(self.flagged(findings=[self.warning("> **accepted (flag-dark):** ok")])[0], 0)
+
+    def test_critical_never_qualifies(self):
+        self.flagged_refused(findings=[self.finding(severity="blocking", level=None, replies=[self.WARN])])
+
+    def test_unrated_never_qualifies(self):
+        self.flagged_refused(findings=[self.finding(severity=None, level=None, replies=[self.WARN])])
+
+    def test_residual_does_not_honour_it(self):
+        code, calls, logs = self.go(mode=["--residual", "r"], findings=[self.warning()])
+        self.assertEqual((code, calls, logs), (4, [], []))
+
+    def test_needs_the_flagged_checks(self):
+        self.flagged_refused(findings=[self.warning()], body="no flag here")
+        self.write_ledger([("codex", "pass", self.HEAD), ("claude", "skip", "old1")])
+        self.flagged_refused(findings=[self.warning()])
+
+    def test_other_reply_wording_refuses(self):
+        self.flagged_refused(findings=[self.warning("Accepted: fine")])
+        self.flagged_refused(findings=[self.warning("ok. Accepted (flag-dark): later")])
+
+    def test_unreplied_still_refuses(self):
+        self.flagged_refused(findings=[self.warning(replied=False, replies=[])])
+
+    def test_level_parse(self):
+        for body, want in (("\u26a0\ufe0f **Warning** (security)", "warning"), ("Medium: n+1", "warning"),
+                           ("**Critical**: leak", None), ("Warning: critical leak", None), ("Nit: x", None), ("looks wrong", None)):
+            self.assertEqual(ps.finding_level(body), want, body)
+
+
+class FindingsQueryFieldsTest(unittest.TestCase):
+    def test_comment_nodes_request_url_created_and_original_commit(self):
+        for q in (ps.FINDINGS_QUERY, ps.FINDINGS_MORE):
+            self.assertIn("nodes{author{login} body url createdAt originalCommit{oid}}", q)
+
+
+class BotApproveTest(unittest.TestCase):
+    def approve(self, cfg):
+        calls = []
+        with mock.patch.dict(ship.ps.CONFIG, {"bot_approver": cfg}), mock.patch.object(ship, "run", calls.append):
+            ship.bot_approve("o/r", 7, "Approved by the bot")
+        return calls[0]
+
+    def test_plain_gh_passes_body_as_one_argv_item(self):
+        cmd = self.approve({"login": "approver-bot", "gh": ["gh-as-approver"]})
+        self.assertEqual(cmd[-1], "Approved by the bot")
+
+    def test_ssh_wrapped_gh_quotes_body(self):
+        cmd = self.approve({"login": "approver-bot", "gh": ["ssh", "approver-host", "gh"]})
+        self.assertEqual(cmd[-1], "'Approved by the bot'")
+
+    def test_login_without_gh_is_refused(self):
+        with mock.patch.dict(ship.ps.CONFIG, {"bot_approver": {"login": "approver-bot"}}):
+            with self.assertRaises(ship.Refused):
+                ship.bot_gh()

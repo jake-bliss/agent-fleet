@@ -1,21 +1,37 @@
 #!/usr/bin/env python3
 """Apply merge authority to a PR: mark ready or squash-merge when the rules allow.
-Usage: pr-ship <pr> [-R owner/repo] [--dry-run] [--no-watch] [--approved-by <adw-ask id>]
+Usage: pr-ship <pr> [-R owner/repo] [--dry-run] [--no-watch] [--approved-by <adw-ask id> | --residual "<reason>" | --flagged <FLAG_KEY>]
 Rules come from $ADW_HOME/pr-tools.json (see config/pr-tools.example.json). With no config, or for a repo or
 author the config does not list, it refuses: merging stays the human's call.
 --approved-by waives only the review-bot gate and high-risk refusal (non-draft PRs in a repo whose "merge" is
 "bot") when the chosen option of that answered adw-ask, answered by the configured approver (default "human"),
 carries the token `ship <repo>#<number>@<head sha>` for this PR's current head; every other gate still applies.
-Title, body and note are never read.
+Title and note are never read; the body is read only to find the flag key for --flagged.
+--residual merges a non-draft PR in a "bot" repo that the review bot reviewed at least once (one cycle: a verdict on any
+earlier head is enough) but did not approve, when: no merge freeze, the bot did not flag high risk, CI is green and the PR
+CLEAN (or only waiting on a review), a Codex pass receipt is on the head and a Claude pass or low-tier skip on the head or
+an ancestor (review-ledger.jsonl; rows flagged unverified are ignored), and every unresolved bot finding, and every
+non-minor resolved one, was answered by us: a reply starting "Fixed in <sha>" naming a PR commit made after the finding,
+a reply starting "false positive" and citing file:line, or a reply citing an adw-ask for this PR that the approver answered
+with an option starting "accept". When review is required it first approves with the configured "bot_approver" account
+(see config/pr-tools.example.json), then merges pinned to the head; every failure after that approval dismisses it.
+Logged as phase "residual" in merge-overrides.jsonl.
+--flagged <FLAG_KEY> is --residual for a PR whose new behaviour is all behind a feature flag that is off in production:
+the key must appear in the PR body, a bot high-risk flag does not refuse, and the Claude receipt must be a direct full
+pass (or a carried one plus a flag-check pass on the exact head); a low-tier skip refuses. A Warning-level (never
+Critical/High/Important/Major, never unrated) finding may also be answered "Accepted (flag-dark):". Logged as phase
+"flagged"; after the merge it prints a monitor and rollback line unless --no-watch.
 Exit: 0 acted/nothing to do, 3 conditions unmet or state changed (wait), 4 refused (needs the human),
 5 tool/GitHub error."""
 import argparse
+import contextlib
 import datetime
 import importlib.machinery
 import importlib.util
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -71,6 +87,37 @@ def merge_freeze(repo):
 
 TOKEN = re.compile(r"ship\s+([A-Za-z0-9._-]+)#([1-9]\d*)@([0-9a-f]{7,40})(?![\w-])")
 TOKEN_ANY = re.compile(r"\bship\s+\S+#\d+@", re.I)
+ASK_ID = re.compile(r"\bd-[0-9a-f]{6}\b")
+FILE_LINE = re.compile(r"[\w./-]+\.\w+:\d+")
+FLAG_DARK_LEAD = re.compile(r"[\s*_>\-]*accepted \(flag-dark\):", re.I)
+FALSE_POSITIVE_LEAD = re.compile(r"[\s*_>\-]*false positive", re.I)
+FIXED_LEAD = re.compile(r"[\s*_>\-]*fixed in `?([0-9a-f]{7,40})\b", re.I)
+FLAG_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{2,79}")
+UNSAFE_BODY = re.compile(r"[();$'\"`\\&|<>\n\r]")
+
+
+def adw_home():
+    return os.environ.get("ADW_HOME") or os.path.expanduser("~/.claude/adw")
+
+
+def review_ledger():
+    return os.environ.get("PR_SHIP_REVIEW_LEDGER") or os.path.join(adw_home(), "review-ledger.jsonl")
+
+
+def approver_answers():
+    return {approver(), "relay:" + approver()}
+
+
+def bot_login():
+    return ((ps.CONFIG.get("bot_approver") or {}).get("login") or "").lower()
+
+
+def bot_gh():
+    cfg = ps.CONFIG.get("bot_approver") or {}
+    cmd = cfg.get("gh")
+    if cfg.get("login") and not cmd:
+        raise Refused('pr-tools.json "bot_approver" needs "gh": the command that runs gh as that account (the default gh is the author and cannot approve)')
+    return [str(c) for c in (cmd or ["gh"])]
 
 
 def ci_unmet(info):
@@ -128,6 +175,384 @@ def log_override(phase, approval, repo, number, head):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "a") as fh:
         fh.write(json.dumps(entry) + "\n")
+
+
+def pr_commits(repo, number):
+    """(sha, author date) per PR commit, oldest first. A rebase keeps author dates."""
+    commits = []
+    for page in range(1, 11):
+        rows = ps.gh_rest(f"repos/{repo}/pulls/{number}/commits?per_page=100&page={page}")
+        commits += [(r["sha"], ((r.get("commit") or {}).get("author") or {}).get("date")) for r in rows]
+        if len(rows) < 100:
+            break
+    return commits
+
+
+def commits_after_finding(commits, finding):
+    """PR commits after the finding's commit; once a rebase drops that commit, those authored after the finding was posted."""
+    shas = [sha for sha, _ in commits]
+    orig, created = finding.get("original_commit"), finding.get("created")
+    if orig in shas:
+        return shas[shas.index(orig) + 1:]
+    return [sha for sha, date in commits if date and created and date > created]
+
+
+def ledger_rows():
+    rows = []
+    try:
+        with open(review_ledger()) as f:
+            for line in f:
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return [r for r in rows if not r.get("unverified")]
+
+
+def review_receipts(head, branch_shas, direct_only=False, full_only=False):
+    """(codex, claude) receipt state for head from the ledger review-receipt appends to: 'pass', 'fail', 'skip' or 'none'.
+    Mirrors prepush-gate: codex needs the exact head; claude the head or a PR ancestor; the latest verdict wins."""
+    rows = ledger_rows()
+    if direct_only:
+        rows = [r for r in rows if not (r.get("who") == "claude" and r.get("via"))]
+    if full_only:
+        rows = [r for r in rows if not (r.get("who") == "claude" and r.get("mode") == "flag-check")]
+    rows = [r for r in rows if not (r.get("who") == "claude" and r.get("mode") == "flag-check" and r.get("sha") != head)]
+    anc = set(branch_shas) | {head}
+
+    def latest(who, ok):
+        verdicts = [r.get("verdict") for r in rows if r.get("who") == who and r.get("verdict") != "skip" and ok(r.get("sha"))]
+        return verdicts[-1] if verdicts else None
+
+    codex = latest("codex", lambda sha: sha == head) or "none"
+    claude = latest("claude", lambda sha: sha in anc)
+    if claude is None:
+        claude = "skip" if any(r.get("who") == "claude" and r.get("verdict") == "skip" and r.get("sha") in anc for r in rows) else "none"
+    return codex, claude
+
+
+def flag_check_on_head(head):
+    """True when the ledger's latest verified claude flag-check row for exactly head is a pass."""
+    verdicts = [r.get("verdict") for r in ledger_rows()
+                if r.get("who") == "claude" and r.get("mode") == "flag-check" and r.get("sha") == head]
+    return bool(verdicts) and verdicts[-1] == "pass"
+
+
+def names_pr(ask, repo, number):
+    short = repo.split("/")[1]
+    texts = [ask.get("title"), ask.get("body"), *(t for o in ask.get("options") or [] for t in (o.get("key"), o.get("label")))]
+    pattern = re.compile(rf"(?<![\w-]){re.escape(short)}#{number}(?!\d)|github\.com/{re.escape(repo)}/pull/{number}(?!\d)", re.I)
+    return any(pattern.search(t or "") for t in texts)
+
+
+def accepted_by_approver(ask_id, cache, repo, number):
+    if ask_id not in cache:
+        try:
+            ask = load_ask(ask_id)
+        except ps.PrError:
+            cache[ask_id] = False
+            return False
+        answer = ask.get("answer") or {}
+        chosen = [o for o in ask.get("options") or [] if o.get("key") == answer.get("choice")]
+        cache[ask_id] = bool(
+            ask.get("status") == "answered" and answer.get("by") in approver_answers() and names_pr(ask, repo, number)
+            and len(chosen) == 1 and (chosen[0].get("label") or "").strip().lower().startswith("accept"))
+    return cache[ask_id]
+
+
+def bot_approve(repo, number, body):
+    body = UNSAFE_BODY.sub("", body)
+    gh = bot_gh()
+    remote = os.path.basename(gh[0]) == "ssh"
+    run([*gh, "pr", "review", str(number), "-R", repo, "--approve", "--body", f"'{body}'" if remote else body])
+
+
+APPROVE_POLLS = 12
+APPROVE_POLL_SECONDS = 5
+SWEEP_PASSES = 11
+SWEEP_SECONDS = 3
+
+
+def gh_json_pages(cmd):
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise ps.PrError((proc.stderr.strip().splitlines() or [f"{cmd[:3]} failed"])[-1])
+    out, decoder, text, pos = [], json.JSONDecoder(), proc.stdout, 0
+    while True:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            return out
+        try:
+            page, pos = decoder.raw_decode(text, pos)
+        except ValueError:
+            raise ps.PrError("gh api returned non-JSON reviews")
+        out += page if isinstance(page, list) else [page]
+
+
+def dismiss_pass(repo, number, reason):
+    """One listing and dismissal pass: (all dismissals succeeded, number of bot APPROVED reviews found)."""
+    message = UNSAFE_BODY.sub("", f"pr-ship withdrew its approval: {reason}, re-run pr-ship")
+    reviews = gh_json_pages(["gh", "api", f"repos/{repo}/pulls/{number}/reviews", "--paginate"])
+    ok, found = True, 0
+    for review in reviews:
+        login = ps.norm((review.get("user") or {}).get("login")).lower()
+        if login != bot_login() or review.get("state") != "APPROVED":
+            continue
+        found += 1
+        proc = subprocess.run(["gh", "api", "-X", "PUT", f"repos/{repo}/pulls/{number}/reviews/{review['id']}/dismissals",
+                               "-f", f"message={message}", "-f", "event=DISMISS"], capture_output=True, text=True)
+        ok = ok and proc.returncode == 0
+    return ok, found
+
+
+def dismiss_bot_approvals(repo, number, reason):
+    """Dismisses every APPROVED review by the bot login using the caller's gh. True only when all dismissals succeeded."""
+    return dismiss_pass(repo, number, reason)[0]
+
+
+def sweep_bot_approvals(repo, number, reason):
+    """Dismisses on every pass for the whole window: a remote approve that errored may still land any time within it."""
+    all_ok = True
+    for attempt in range(SWEEP_PASSES):
+        try:
+            ok, _ = dismiss_pass(repo, number, reason)
+        except Exception:
+            ok = False
+        all_ok = all_ok and ok
+        if attempt < SWEEP_PASSES - 1:
+            time.sleep(SWEEP_SECONDS)
+    return all_ok
+
+
+def settle_after_approve(repo, number, head):
+    """Polls until the PR is CLEAN on head; raises HeadMoved or StateChanged otherwise. Returns the fresh info."""
+    fresh = None
+    for attempt in range(APPROVE_POLLS):
+        fresh = fetch_info(repo, number)
+        if fresh["head"] != head:
+            raise HeadMoved(f"head moved to {fresh['head'][:7]} during bot approval")
+        if fresh["merge_state"] == "CLEAN" or fresh["state"] != "open":
+            break
+        if attempt < APPROVE_POLLS - 1:
+            time.sleep(APPROVE_POLL_SECONDS)
+    if fresh["merge_state"] != "CLEAN":
+        raise StateChanged(f"merge state is {fresh['merge_state']}, not CLEAN, after bot approval")
+    return fresh
+
+
+def withdraw_approval(phase, entry, repo, number, head, exc, sweep=False):
+    """Dismisses the bot's approvals after a failure and logs it; never raises. True when the approval is gone."""
+    reason = UNSAFE_BODY.sub("", str(exc) or type(exc).__name__)
+
+    def log(stage, **extra):
+        try:
+            log_override(phase, {"stage": stage, **extra, **entry}, repo, number, head)
+        except OSError as err:
+            print(f"pr-ship: audit log write failed: {err}", file=sys.stderr)
+
+    if isinstance(exc, HeadMoved):
+        log("approved-moved-head")
+    quiet = {}
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        try:
+            quiet[sig] = signal.signal(sig, signal.SIG_IGN)
+        except ValueError:
+            pass
+    try:
+        gone = sweep_bot_approvals(repo, number, reason) if sweep else dismiss_bot_approvals(repo, number, reason)
+        err = None if gone else "a dismissal call failed"
+    except BaseException as exc2:
+        gone, err = False, str(exc2) or type(exc2).__name__
+    finally:
+        for sig, handler in quiet.items():
+            signal.signal(sig, handler if handler is not None else signal.SIG_DFL)
+    if not gone:
+        log("approved-unmerged", reason=reason, withdraw_error=err)
+        print(f"pr-ship: LOUD: stopped before merging AND dismissing the bot approval failed ({err}); the approval on "
+              f"{repo}#{number} may still stand and cover later pushes - dismiss it by hand", file=sys.stderr)
+        return False
+    log("approved-withdrawn", reason=reason)
+    return True
+
+
+class Refused(Exception):
+    pass
+
+
+class GuardState:
+    approved = False
+
+
+@contextlib.contextmanager
+def approval_guard(phase, entry, repo, number, head):
+    """Around everything after a bot approve: any failure or termination dismisses the approval, then re-raises."""
+    def terminate(signum, frame):
+        raise KeyboardInterrupt
+
+    state = GuardState()
+    old = {}
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            old[sig] = signal.signal(sig, terminate)
+        except ValueError:
+            pass
+    try:
+        yield state
+    except BaseException as exc:
+        if not withdraw_approval(phase, entry, repo, number, head, exc, sweep=not state.approved):
+            raise ps.PrError("could not dismiss the bot approval; it may still stand") from exc
+        raise
+    finally:
+        for sig, handler in old.items():
+            signal.signal(sig, handler if handler is not None else signal.SIG_DFL)
+
+
+def check_before_merge(repo):
+    """Raises Refused when a merge freeze appeared since the decision."""
+    frozen = merge_freeze(repo)
+    if frozen:
+        raise Refused(f"MERGE FREEZE on {repo} ({frozen})")
+
+
+def review_blocked(info):
+    return info["merge_state"] == "BLOCKED" and info.get("review_decision") == "REVIEW_REQUIRED"
+
+
+def not_clean_reason(info):
+    reason = f"merge state is {info['merge_state']}, not CLEAN"
+    if info.get("review_decision") == "CHANGES_REQUESTED":
+        reason += "; changes requested (a reviewer's, the bot's included, is never overridden)"
+    return reason
+
+
+def residual_decide(info, repo, number, flagged=None):
+    """Returns (action, reason, evidence) for --residual or --flagged: action is one of done, merge, wait, refuse."""
+    mode = "flagged" if flagged else "residual"
+    if info["state"] == "merged":
+        return "done", "PR is merged; nothing to do", {}
+    if info["state"] != "open":
+        return "refuse", f"PR is {info['state']}, not merged", {}
+    if flagged and not FLAG_KEY.fullmatch(flagged):
+        return "refuse", f"flag key {flagged!r} must match {FLAG_KEY.pattern}", {}
+    if flagged and not re.search(rf"(?<![A-Za-z0-9_.:-]){re.escape(flagged)}(?![A-Za-z0-9_.:-])", info.get("body") or ""):
+        return "refuse", f"PR body does not name flag {flagged}", {}
+    if repo not in bot_repos():
+        return "refuse", f"--{mode} applies only to repos whose merge is \"bot\" in pr-tools.json", {}
+    if info["draft"]:
+        return "refuse", f"draft: run pr-ship without --{mode} to mark it ready", {}
+    if info.get("author") not in our_authors():
+        return "refuse", f"not ours: {info.get('author') or 'unknown'}; the human's call", {}
+    if not info.get("default_branch") or info.get("base") != info["default_branch"]:
+        return "refuse", f"base is {info.get('base')}, not the default branch {info.get('default_branch')}; the human's call", {}
+    frozen = merge_freeze(repo)
+    if frozen:
+        return "refuse", f"MERGE FREEZE on {repo} ({frozen})", {}
+    bot = info["bot"]
+    if bot.get("high_risk") and not flagged:
+        return "refuse", "needs the human: the review bot flagged high risk / human review required", {}
+    head = info["head"]
+    dated = pr_commits(repo, number)
+    commits = [sha for sha, _ in dated]
+    codex, claude = review_receipts(head, commits)
+    if codex != "pass":
+        return "refuse", f"no Codex pass receipt on head {head[:7]} (latest: {codex})", {}
+    if flagged:
+        direct = review_receipts(head, commits, direct_only=True)[1]
+        if direct != "pass":
+            full = review_receipts(head, commits, full_only=True)[1]
+            if full != "pass" or not flag_check_on_head(head):
+                return "refuse", (f"--flagged needs an Opus pass covering the flag: either a direct full pass on head {head[:7]} or an ancestor "
+                                  f"(latest direct: {direct}), or a full pass carried via a Codex delta (latest full: {full}) plus an Opus flag-check pass "
+                                  f"on the exact head ({'found' if flag_check_on_head(head) else 'missing'}). A low-tier skip does not count. Run the Opus reviewer on this head, then "
+                                  "review-receipt claude pass \"<what Opus found>\" --report <verdict file>; after a carried fail, run the reviewer with --mode flag-check on the head"), {}
+    if claude not in ("pass", "skip"):
+        return "refuse", f"no Claude pass (or low-tier skip) receipt on head {head[:7]} or an ancestor (latest: {claude})", {}
+    cache, asks, dark = {}, [], []
+    for f in ps.open_findings(repo, number, resolved_blocking=True):
+        if not f["replied"]:
+            return "refuse", f"unreplied review-bot finding: {f['url']}", {}
+        if f["severity"] == "minor":
+            continue
+        cited = [i for body in f["replies"] for i in ASK_ID.findall(body)]
+        accepted = [i for i in cited if accepted_by_approver(i, cache, repo, number)]
+        false_positive = any(FALSE_POSITIVE_LEAD.match(b) and FILE_LINE.search(b) for b in f["replies"])
+        later = commits_after_finding(dated, f)
+        fixed = any(c.startswith(m.group(1)) for b in f["replies"] if (m := FIXED_LEAD.match(b)) for c in later)
+        flag_dark = bool(flagged) and f.get("level") == "warning" and any(FLAG_DARK_LEAD.match(b) for b in f["replies"])
+        flag_dark_hint = ', or (--flagged, Warning only) "Accepted (flag-dark):"' if flagged else ''
+        if not accepted and not false_positive and not fixed and not flag_dark:
+            return "refuse", ("Critical/Warning finding needs a reply citing an ask for this PR that the approver answered with an accept "
+                              "option, or a reply starting \"false positive\" with file:line, or \"Fixed in <sha>\" naming a PR commit after "
+                              f"the finding's commit (or, after a rebase, authored after the finding){flag_dark_hint}: {f['url']}"), {}
+        asks += accepted
+        if flag_dark and not (accepted or false_positive or fixed):
+            dark.append(f["url"])
+    unmet = ci_unmet(info)
+    if not (bot.get("verdict_head") or bot.get("rounds") or bot.get("label")):
+        unmet.append("the review bot has not reviewed this PR yet")
+    if info["merge_state"] != "CLEAN" and not review_blocked(info):
+        unmet.append(not_clean_reason(info))
+    if unmet:
+        return "wait", "; ".join(unmet), {}
+    evidence = {"bot_score": bot.get("score"), "bot_verdict": bot.get("label"), "asks": sorted(set(asks))}
+    if flagged:
+        evidence["flag"] = flagged
+        evidence["flag_dark_accepted"] = dark
+    return "merge", f"{mode}: review bot {bot.get('score') or '?'}/5 unapproved; findings answered; CI green, CLEAN", evidence
+
+
+def merge_pinned(repo, number, head):
+    run(["gh", "pr", "merge", str(number), "-R", repo, "--squash", "--match-head-commit", head])
+
+
+def residual_ship(repo, number, info, reason, dry_run, no_watch, flagged=None):
+    phase = "flagged" if flagged else "residual"
+    tag = f"{repo.split('/')[1]}#{number}"
+    action, why, evidence = residual_decide(info, repo, number, flagged)
+    if action in ("done", "wait", "refuse"):
+        print(f"{tag} {action}: {why}")
+        return EXIT[action]
+    if dry_run:
+        approve = " (after bot-approving, review is required)" if review_blocked(info) else ""
+        print(f"{tag} dry-run: would squash-merge{approve} ({why}; reason: {reason})")
+        return 0
+    fresh = fetch_info(repo, number)
+    if fresh["head"] != info["head"] or residual_decide(fresh, repo, number, flagged)[0] != "merge":
+        raise StateChanged("state changed, re-run")
+    entry = {"reason": reason, **evidence}
+    log_override(phase, {"stage": "pending", **entry}, repo, number, info["head"])
+    if review_blocked(fresh):
+        if not bot_login():
+            raise Refused("review is required and pr-tools.json has no bot_approver; the human's call")
+        score = UNSAFE_BODY.sub("", str(evidence["bot_score"] or "?"))
+        with approval_guard(phase, entry, repo, number, info["head"]) as guard:
+            body = (f"pr-ship flagged: new behaviour behind {UNSAFE_BODY.sub('', flagged)}, findings answered, CI green" if flagged
+                    else f"pr-ship residual: review bot {score}/5 unapproved, findings answered, CI green - {reason}")
+            bot_approve(repo, number, body)
+            guard.approved = True
+            settled = settle_after_approve(repo, number, info["head"])
+            if residual_decide(settled, repo, number, flagged)[0] != "merge":
+                raise StateChanged("state changed, re-run")
+            check_before_merge(repo)
+            merge_pinned(repo, number, info["head"])
+    else:
+        check_before_merge(repo)
+        merge_pinned(repo, number, info["head"])
+    try:
+        log_override(phase, {"stage": "merged", **entry}, repo, number, info["head"])
+    except OSError as exc:
+        print(f"pr-ship: merged but audit log write failed: {exc}", file=sys.stderr)
+    print(f"{tag} merged without review-bot approval: {reason}")
+    if not no_watch:
+        print(f"watch: pr-state {number} -R {repo} --wait deployed")
+        if flagged:
+            print(f"monitor: exercise it with {flagged} on in a non-production environment and check it stays inert with {flagged} off in "
+                  f"production; turning {flagged} on in production is the human's; rollback: revert the squash commit in a PR and "
+                  f"pr-ship it --flagged {flagged}, or turn {flagged} off")
+    return 0
 
 
 def decide(info, repo, approval=None):
@@ -188,6 +613,10 @@ class StateChanged(Exception):
     pass
 
 
+class HeadMoved(StateChanged):
+    pass
+
+
 def run(cmd):
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -220,7 +649,10 @@ def main(argv=None):
     parser.add_argument("-R", "--repo")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--no-watch", action="store_true")
-    parser.add_argument("--approved-by", metavar="ASK_ID")
+    exclusive = parser.add_mutually_exclusive_group()
+    exclusive.add_argument("--approved-by", metavar="ASK_ID")
+    exclusive.add_argument("--residual", metavar="REASON")
+    exclusive.add_argument("--flagged", metavar="FLAG_KEY")
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
@@ -229,6 +661,16 @@ def main(argv=None):
         repo, number = ps.parse_target(args.pr, args.repo)
         info = fetch_info(repo, number)
         tag = f"{repo.split('/')[1]}#{number}"
+        if args.residual is not None:
+            if not args.residual.strip():
+                print(f"{tag} refuse: --residual needs a one-line reason")
+                return EXIT["refuse"]
+            return residual_ship(repo, number, info, args.residual.strip(), args.dry_run, args.no_watch)
+        if args.flagged is not None:
+            if not FLAG_KEY.fullmatch(args.flagged):
+                print(f"{tag} refuse: flag key {args.flagged!r} must match {FLAG_KEY.pattern}")
+                return EXIT["refuse"]
+            return residual_ship(repo, number, info, f"new behaviour behind {args.flagged}", args.dry_run, args.no_watch, args.flagged)
         approval = None
         if args.approved_by:
             if repo not in bot_repos() or info["draft"]:
@@ -276,6 +718,9 @@ def main(argv=None):
     except StateChanged as exc:
         print(f"pr-ship: {exc}", file=sys.stderr)
         return 3
+    except Refused as exc:
+        print(f"pr-ship: refuse: {exc}", file=sys.stderr)
+        return EXIT["refuse"]
     except Exception as exc:
         print(f"pr-ship: {exc}", file=sys.stderr)
         return EXIT_ERROR

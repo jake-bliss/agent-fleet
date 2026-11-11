@@ -9,14 +9,18 @@ Usage: adw-board needs                                  the Needs-you list, one 
 Env: ADW_HOME, ADW_LAUNCH_ARGS (args for agents launched from the board),
      ADW_BOARD_TS_HOST + ADW_BOARD_TS_USER (optional tailscale serve access), ADW_MATE_DIGEST_AT,
      ADW_LEAD_REFRESH_AT (context tokens past which an idle refreshable lead is flagged, default 150000),
-     ADW_LEAD_REFRESH_LONG_WAIT_AT (same, for a wait of an hour or more, default 80000),
-     ADW_LEAD_AUTO_COMPACT (0 disables), ADW_LEAD_COMPACT_AT (default 100000), ADW_LEAD_COMPACT_IDLE (secs, default 2700),
+     ADW_LEAD_REFRESH_LONG_WAIT_AT (same, for a wait of an hour or more, default 120000),
+     ADW_DESK_TZ (IANA zone for the watchdog morning summary, default UTC), ADW_DESK_HOURS (start-end local hours, default 8-17),
      ADW_MACHINES (comma-separated names of other machines whose herdr is reachable at ~/.config/herdr/remote/<name>.sock), ADW_MACHINE (this machine's own name),
      ADW_MATE_IGNORE_CWDS (comma-separated cwd prefixes the first mate ignores), ADW_DISK_ALERT_PCT (default 80)
 """
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+import fcntl
+import gzip
+import hashlib
 import importlib.util
 import io
 import secrets
@@ -41,6 +45,39 @@ PENDING_SHOWN = 5
 ASK_FRESH_HOURS = float(os.environ.get("ADW_BOARD_ASK_FRESH_HOURS", "2"))
 ANSWERED_SHOWN_HOURS = 24
 LINKS = ADW_HOME / "board-links.json"
+
+
+def load_links():
+    try:
+        return json.loads(LINKS.read_text()).get("sessions", {})
+    except (OSError, ValueError):
+        return {}
+
+
+def save_link(session, epic):
+    links = load_links()
+    if epic:
+        links[session] = epic
+    else:
+        links.pop(session, None)
+    tmp = LINKS.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"sessions": links}, indent=2))
+    tmp.replace(LINKS)
+
+
+def accepts_gzip(header):
+    q = {}
+    for part in header.split(","):
+        coding, *params = [x.strip().lower() for x in part.split(";")]
+        weight = 1.0
+        for param in params:
+            if param.startswith("q="):
+                try:
+                    weight = float(param[2:])
+                except ValueError:
+                    weight = 0.0
+        q.setdefault(coding, weight)
+    return q.get("gzip", q.get("*", 0.0)) > 0
 
 
 def load_links():
@@ -205,6 +242,8 @@ def watch_state(status, last_active, ev):
     if status == "working":
         return {**w, "state": "working"}
     resumed = last_active and last_active > ev["at"] + RESUMED_SLACK
+    if ev["kind"] == "ended":
+        return None
     if ev["kind"] in ("done", "failed"):
         return None if resumed else {**w, "state": ev["kind"]}
     if resumed:
@@ -310,11 +349,7 @@ ASKS_YOU = re.compile(
     r"|\bpick\b|\bapprove\b|\bif you (?:like|want)\b|\bwaiting (?:on|for) (?:you|your)\b", re.I | re.M)
 
 
-def last_turn(text):
-    lines = text.splitlines()
-    prompt = max((i for i, l in enumerate(lines) if l.startswith("❯")), default=len(lines))
-    start = max((i for i, l in enumerate(lines[:prompt]) if l.startswith("⏺ ")), default=0)
-    return "\n".join(lines[start:prompt]), (lines[prompt][1:].strip() if prompt < len(lines) else "")
+last_turn = asks.mux.last_turn
 
 
 def summary(text):
@@ -376,13 +411,8 @@ def last_message_at(path):
 
 IN_TAB_WORK = re.compile(r"← \d+ agent|\d+ background|Waiting for \d+ background")
 REFRESH_AT = int(os.environ.get("ADW_LEAD_REFRESH_AT", "150000"))
-REFRESH_LONG_WAIT_AT = int(os.environ.get("ADW_LEAD_REFRESH_LONG_WAIT_AT", "80000"))
+REFRESH_LONG_WAIT_AT = int(os.environ.get("ADW_LEAD_REFRESH_LONG_WAIT_AT", "120000"))
 LONG_WAIT = 3600
-COMPACT_AT = int(os.environ.get("ADW_LEAD_COMPACT_AT", "100000"))
-COMPACT_IDLE = int(os.environ.get("ADW_LEAD_COMPACT_IDLE", "2700"))
-COMPACT_MSG = ("/compact Keep: the epic name and that you are its lead; each segment in flight with PR number, state and "
-               "what it waits on; open asks; anything the user or the first mate told you that is still in force; "
-               "background shells and agents still running.")
 
 
 def refresh_at(w):
@@ -457,7 +487,10 @@ def load_agents(epics):
         for t in json.loads(tout)["result"]["tabs"] if tout else []:
             tab_labels[(m, t["tab_id"])] = t.get("label") or ""
     links = load_links()
-    leads = {e["lead"]["session"]: e for e in epics if (e.get("lead") or {}).get("session")}
+    leads = {}
+    for e in epics:
+        if (e.get("lead") or {}).get("session"):
+            leads.setdefault(e["lead"]["session"], []).append(e)
     agents = []
     for a, text in zip(raw, texts):
         sid = (a.get("agent_session") or {}).get("value")
@@ -468,9 +501,10 @@ def load_agents(epics):
             title = label
         linked = links.get(sid) if sid else None
         active = last_active(a["agent"], sid)
-        led = leads.get(sid) if sid else None
-        if led:
-            led["lead_pane"] = a["pane_id"]
+        led_all = leads.get(sid) if sid else None
+        led = led_all[0] if led_all else None
+        for e in led_all or []:
+            e["lead_pane"] = a["pane_id"]
         epic = (led and led["epic"]) or linked or next((e["epic"] for e in epics
                                if words(e["epic"]) <= twords or any(t in text for t in e["tokens"])), None)
         agents.append({
@@ -517,6 +551,25 @@ def mate_digest():
         return None
 
 
+SLIM_KEYS = ("id", "status", "title", "epic", "pane", "created", "recommend", "default_at",
+             "delivered", "undeliverable", "delivery_error")
+
+
+def slim_decision(d):
+    if d["status"] == "open":
+        return d
+    a = d.get("answer") or {}
+    out = {k: d[k] for k in SLIM_KEYS if k in d}
+    out["answer"] = {k: a[k] for k in ("choice", "by", "at") if k in a}
+    out["options"] = [{"key": o["key"], "label": o.get("label")} for o in d.get("options") or [] if o.get("key") == a.get("choice")]
+    out["slim"] = True
+    return out
+
+
+def slim_board(b):
+    return {**b, "decisions": [slim_decision(d) for d in b.get("decisions") or [] if d["status"] != "withdrawn"]}
+
+
 def build(args):
     cutoff = time.time() - args.days * 86400
     epics, completed = [], []
@@ -560,6 +613,7 @@ def build(args):
 
 
 MATE_INTERRUPT_KINDS = ("ticket.authorize", "efficiency.due")
+MATE_ADDRESSED = re.compile(r"\b(?:first[ -]?)?mate\b(?:\s*\([^)]*\))?\s*[:,]", re.I)
 
 
 def needs_you(b):
@@ -781,22 +835,29 @@ def serve(args):
         # Requests proxied by `tailscale serve` carry the tailnet user's login; nothing else may use that host.
         return host in ts_hosts and headers.get("Tailscale-User-Login") == ts_user
     lock = threading.Lock()
-    cache = {"at": 0, "body": b""}
+    page_gz = gzip.compress(page, 9)
+    cache = {"at": 0, "body": b"", "gz": b""}
 
     def board_json():
         with lock:
             if time.time() - cache["at"] > 5:
                 asks.apply_defaults()
                 asks.retry_deliveries()
-                cache["body"] = json.dumps(build(args)).encode()
+                cache["body"] = json.dumps(slim_board(build(args))).encode()
+                cache["gz"] = gzip.compress(cache["body"], 5)
                 cache["at"] = time.time()
-            return cache["body"]
+            return cache["body"], cache["gz"]
 
     class H(BaseHTTPRequestHandler):
-        def send(self, code, ctype, body):
+        def send(self, code, ctype, body, gz=None):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Vary", "Accept-Encoding")
+            if accepts_gzip(self.headers.get("Accept-Encoding", "")):
+                body = gz if gz is not None else gzip.compress(body, 5)
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
@@ -806,7 +867,7 @@ def serve(args):
                 return self.send(403, "text/plain", b"forbidden host\n")
             path = self.path.split("?")[0]
             if path == "/":
-                return self.send(200, "text/html; charset=utf-8", page)
+                return self.send(200, "text/html; charset=utf-8", page, page_gz)
             if path == "/api/pane":
                 from urllib.parse import parse_qs, urlsplit
                 q = parse_qs(urlsplit(self.path).query)
@@ -818,7 +879,14 @@ def serve(args):
             if path == "/api/workspaces":
                 return self.send(200, "application/json", json.dumps(workspaces()).encode())
             if path == "/api/board":
-                return self.send(200, "application/json", board_json())
+                return self.send(200, "application/json", *board_json())
+            if path == "/api/decision":
+                from urllib.parse import parse_qs, urlsplit
+                try:
+                    d = asks.load(parse_qs(urlsplit(self.path).query).get("id", [""])[0])
+                except (SystemExit, ValueError) as e:
+                    return self.send(404, "application/json", json.dumps({"error": str(e)}).encode())
+                return self.send(200, "application/json", json.dumps(d).encode())
             if path == "/api/timelog.csv":
                 from urllib.parse import parse_qs, urlsplit
                 q = parse_qs(urlsplit(self.path).query)
@@ -1063,6 +1131,10 @@ def mate_events(b):
         if w and w["state"] in ("stopped-silent", "overdue", "failed", "done"):
             kind = "ready" if w["state"] == "done" else "trouble"
             ev[f"watch:{key}:{w['state']}:{int(w['at'])}"] = f"{kind} {w['state']} {a['pane']} {a['title']}{role_s(a)} :: {w['text']}"
+        elif w and w["state"] in ("waiting", "working") and a["pane"] != b.get("mate_pane") and (m := MATE_ADDRESSED.search(w["text"])):
+            ask = w["text"][m.start():]
+            ev[f"mate-request:{key}:{hashlib.sha1(ask.encode()).hexdigest()[:10]}"] = (
+                f"mate-request {a['pane']} {a['title']}{role_s(a)} :: {ask}")
     for a in b.get("agents") or []:
         w = a.get("watch")
         if (a.get("role") == "lead" and (a.get("context") or 0) >= refresh_at(w or {}) and a["status"] in ("idle", "done")
@@ -1081,11 +1153,19 @@ def mate_events(b):
     for e in b["epics"]:
         if e.get("stage") == "ready" and not e.get("paused"):
             ev[f"epic-ready:{e['epic']}"] = f"plan-ready epic {e['epic']} was approved in planning; start its lead"
-        live_segs = e["counts"].get("building", 0) + e["counts"].get("pr-open", 0)
-        if e.get("lead") and not e.get("lead_pane") and live_segs and not e.get("paused") and b.get("agents") is not None:
-            ev[f"leaderless:{e['epic']}:{e['lead']['session']}"] = (
-                f"trouble leaderless {e['epic']}: lead {e['lead']['pane']} is gone with {live_segs} segment(s) in flight")
         c = e["counts"]
+        live_segs = c.get("building", 0) + c.get("pr-open", 0)
+        open_segs = live_segs + sum(c.get(k, 0) for k in ("pr-ready", "ready", "pending", "blocked"))
+        orphaned = (open_segs and not e.get("paused") and not e.get("completed_at") and e.get("stage", "live") == "live"
+                    and b.get("agents") is not None)
+        if orphaned and e.get("lead") and not e.get("lead_pane"):
+            ev[f"leaderless:{e['epic']}:{e['lead']['session']}"] = (
+                f"trouble leaderless {e['epic']}: lead {e['lead']['pane']} is gone with {live_segs} segment(s) in flight, "
+                f"{open_segs - live_segs} waiting: adw-respawn {e['lead']['pane']}")
+        elif orphaned and not e.get("lead"):
+            ev[f"leaderless:{e['epic']}:none"] = (
+                f"trouble leaderless {e['epic']}: no lead registered and {open_segs} open segment(s): the human starts a lead, "
+                f"pauses or completes it")
         live = sum(v for k, v in c.items() if k in ("pending", "ready", "building", "pr-open", "blocked", "pr-ready"))
         if c.get("merged") and not live:
             ev[f"epic-done:{e['epic']}"] = f"ready epic {e['epic']} has every segment merged; mark complete?"
@@ -1149,6 +1229,9 @@ def digest(b):
         if title == "Needs you" and n_snoozed:
             out.append(f"- ({n_snoozed} snoozed on the board)")
         out.append("")
+    rotations = rotate_module().recent()
+    if rotations:
+        out += [f"## Session compactions (24h) ({len(rotations)})", *rotations, ""]
     return "\n".join(out).rstrip() + "\n"
 
 
@@ -1181,27 +1264,6 @@ def show(b, target):
 REFIRE_AFTER = 600
 
 
-def auto_compact(b, st):
-    """Compact a sleeping lead before its 1h prompt cache expires, so its next wake re-writes a summary instead of
-    its whole context. /compact keeps in-tab background agents and shells, unlike the [refreshable] /clear."""
-    done = st.setdefault("compacted", {})
-    now = time.time()
-    for a in b.get("agents") or []:
-        sid, ctx, active = a.get("session"), a.get("context") or 0, a.get("last_active") or 0
-        if (a.get("role") != "lead" or a.get("kind") != "claude" or not sid or ctx < COMPACT_AT
-                or a["status"] not in ("idle", "done") or a["attention"] in ("blocked", "working")
-                or not active or now - active < COMPACT_IDLE or done.get(sid, {}).get("ctx") == ctx):
-            continue
-        out, err = asks.prompt(a["pane"], COMPACT_MSG)
-        ok = out is not None
-        with open(MATE / "compact.log", "a") as f:
-            f.write(f"{datetime.now():%Y-%m-%d %H:%M} {'compact' if ok else 'compact-failed'} {a['pane']} {a.get('epic')} "
-                    f"{ctx // 1000}k idle {int((now - active) // 60)}m{'' if ok else ' :: ' + str(err)}\n")
-        if ok:
-            done[sid] = {"ctx": ctx, "at": now}
-    st["compacted"] = {k: v for k, v in done.items() if now - v["at"] < 86400}
-
-
 def watch(args):
     MATE.mkdir(parents=True, exist_ok=True)
     state_p = MATE / "watch-state.json"
@@ -1222,8 +1284,6 @@ def watch(args):
             print(f"watch-error {type(e).__name__}: {e}", flush=True)
             time.sleep(60)
             continue
-        if os.environ.get("ADW_LEAD_AUTO_COMPACT", "1") != "0":
-            auto_compact(b, st)
         ev = mate_events(b)
         t = time.time()
         emitted = False
@@ -1262,9 +1322,292 @@ def watch(args):
         time.sleep(30)
 
 
+WATCHDOG_REFIRE = 2 * 3600
+WATCHDOG_STALL_REFIRE = 4 * 3600
+WATCHDOG_SILENT = 20 * 60
+WATCHDOG_IDLE_BUILD = 60 * 60
+WATCHDOG_GATED_ASK = 4 * 3600
+DESK_TZ = ZoneInfo(os.environ.get("ADW_DESK_TZ", "UTC"))
+DESK_HOURS = tuple(int(x) for x in os.environ.get("ADW_DESK_HOURS", "8-17").split("-"))
+WATCHDOG_MORNING_HOUR = DESK_HOURS[0]
+AWAY_HOLD = ("decision:", "ask-aging:", "watch:", "request:", "building-idle:", "mate-request:")
+
+
+def at_desk(utc):
+    local = utc.astimezone(DESK_TZ)
+    return local.weekday() < 5 and DESK_HOURS[0] <= local.hour < DESK_HOURS[1]
+
+
+def refire_held(k, utc):
+    """Away from the desk, kinds whose keys never name a different event wait for the morning summary instead of refiring."""
+    return k.startswith(AWAY_HOLD) and not at_desk(utc)
+
+
+def stall_module():
+    spec = importlib.util.spec_from_file_location("stall", Path(__file__).resolve().parent / "stall.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def rotate_module():
+    spec = importlib.util.spec_from_file_location("rotate", Path(__file__).resolve().parent / "rotate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def rotate_sessions(full, dry_run=False):
+    """Compacts idle leads and the first mate whose context is large; never fails the watchdog."""
+    try:
+        acts = rotate_module().run(full.get("agents") or [], mate_pane(full), asks.mux,
+                                   lambda pane, text, guard=None, timeout=None: asks.mux.prompt(pane, text, timeout=timeout, guard=guard),
+                                   dry_run=dry_run)
+    except Exception as e:
+        print(f"watchdog: rotation skipped: {e!r}", file=sys.stderr)
+        return
+    for a in acts:
+        print(f"watchdog: rotate {a['event']} {a['pane']} {a.get('why') or ''}")
+
+
+def lead_reachable(pane, session):
+    info = asks.mux.get(pane)
+    return bool(info) and info["status"] != "blocked" and (not session or info["session"] == session)
+
+
+def lead_now(session, pane):
+    """(current pane, status) of the lead found by its session, else its registered pane; None when it is gone."""
+    found = asks.mux.terminal_for_session(session) if session else None
+    where = asks.pane_ref(found) if found else pane
+    info = asks.mux.get(where) if where else None
+    if not info or (session and info["session"] != session):
+        return None
+    return where, info["status"]
+
+
+def busy_panes(b):
+    return {a.get("pane") for a in (b or {}).get("agents") or [] if a.get("attention") in ("unsent", "blocked", "asks")}
+
+
+def stall_redispatch(b, mate, t, busy=None):
+    busy = busy_panes(b) if busy is None else busy
+    sessions = {}
+
+    def occupied(pane):
+        return pane in busy
+
+    def resolve(session, pane):
+        now = lead_now(session, pane)
+        if now:
+            sessions[now[0]] = session
+        return (now[0], "blocked") if now and occupied(now[0]) else now
+
+    def typed(pane, text, session):
+        refused = []
+
+        def guard():
+            refused.append(asks.mux.idle_guard(pane, session)())
+            return refused[-1]
+
+        _, err = asks.prompt(pane, text, guard=guard)
+        return None if refused and refused[-1] else err is None
+
+    try:
+        stall_module().redispatch(EPICS.parent, t, lambda pane, text: typed(pane, text, sessions.get(pane)), resolve,
+                                  lambda text: bool(mate) and (asks.agent_info(mate) or {}).get("status") not in (None, "blocked")
+                                  and not occupied(mate) and bool(typed(mate, text, None)), b)
+    except Exception as e:
+        print(f"watchdog: redispatch failed: {e!r}", file=sys.stderr)
+
+
+def watchdog_items(b, t=None, write=False):
+    t = t or time.time()
+    ev = mate_events(b)
+    quiet = {f"watch:{a.get('session') or a['pane']}:stopped-silent:{int(a['watch']['at'])}"
+             for a in b.get("agents") or []
+             if a.get("watch") and a["watch"]["state"] == "stopped-silent"
+             and t - (a.get("last_active") or a["watch"]["at"]) <= WATCHDOG_SILENT}
+    ev = {k: v for k, v in ev.items() if k not in quiet}
+    agents = b.get("agents") or []
+    for e in b["epics"]:
+        if e.get("paused") or not e["segments"].get("building"):
+            continue
+        mine = [a for a in agents if a.get("epic") == e["epic"] or (e.get("lead_pane") and a["pane"] == e["lead_pane"])]
+        if not mine or any(a["status"] in ("working", "unknown") or (a.get("watch") or {}).get("state") == "waiting" for a in mine):
+            continue
+        last = max([e["mtime"], *(a.get("last_active") or 0 for a in mine), *(a.get("changed_at") or 0 for a in mine)])
+        if t - last > WATCHDOG_IDLE_BUILD:
+            for s in e["segments"]["building"]:
+                ev[f"building-idle:{e['epic']}:{s['id']}"] = (
+                    f"trouble segment {s['id']} of {e['epic']} is building but the epic has had no activity for {age(last)}")
+    try:
+        ev.update(stall_module().items(b, t, EPICS.parent, write))
+    except Exception as e:
+        print(f"watchdog: stall skipped: {e!r}", file=sys.stderr)
+    for d in b.get("decisions") or []:
+        if d["status"] == "open" and t - d["created"] > WATCHDOG_GATED_ASK and (d.get("class") in asks.GATED or asks.gate_hit(d)):
+            ev.pop(f"decision:{d['id']}", None)
+            ev[f"ask-aging:{d['id']}"] = f"trouble gated decision {d['id']} [{d.get('epic') or '-'}] has waited {age(d['created'])}: {d['title']}"
+    return ev
+
+
+def refire_after(k):
+    return WATCHDOG_STALL_REFIRE if k.startswith("stall:") else WATCHDOG_REFIRE
+
+
+def watchdog_plan(items, st, t, utc):
+    """Returns (header, lines, new_state); header is None when nothing should be sent."""
+    fired = {k: v for k, v in (st.get("fired") or {}).items() if k in items or t - v <= refire_after(k)}
+    new = [k for k in items if k not in fired or (t - fired[k] > refire_after(k) and not refire_held(k, utc))]
+    local = utc.astimezone(DESK_TZ)
+    today = f"{local:%Y-%m-%d}"
+    morning = local.hour >= WATCHDOG_MORNING_HOUR and st.get("morning") != today
+    ns = {"fired": fired, "morning": today if morning else st.get("morning")}
+    if morning:
+        sent = list(items)
+        header = f"[watchdog] morning summary, {len(sent)} open:" if sent else "[watchdog] morning summary: nothing open"
+    elif new:
+        sent = new
+        header = f"[watchdog] {len(sent)} items:"
+    else:
+        return None, [], ns
+    for k in sent:
+        fired[k] = t
+    return header, [items[k] for k in sent], ns
+
+
+def mate_pane(b):
+    if b.get("mate_pane"):
+        return b["mate_pane"]
+    for a in asks.list_agents() or []:
+        if a.get("name") == "first-mate":
+            return a["pane_id"]
+    return os.environ.get("ADW_MATE_PANE")
+
+
+def stall_fresh(items, prior, t):
+    return [k for k in items if k.startswith("stall:") and t - (prior.get("fired") or {}).get(k, -1e18) > refire_after(k)]
+
+
+def stall_annotate(items, prior, t):
+    """Adds the unreachable-lead note to fresh stall items; returns (items, {key: lead pane or None})."""
+    keys = stall_fresh(items, prior, t)
+    if not keys:
+        return items, {}
+    try:
+        return stall_module().annotate(items, keys, EPICS.parent, lead_reachable)
+    except Exception as e:
+        print(f"watchdog: stall lead check failed: {e!r}", file=sys.stderr)
+        return items, {k: None for k in keys}
+
+
+def stall_deliver(items, targets, mate_ok, t):
+    """Sends the fresh stall items to their epic leads and logs each fire; a stall failure never blocks the watchdog."""
+    if not targets:
+        return
+    try:
+        stall_module().deliver(list(targets), items, mate_ok, lambda pane, text: asks.prompt(pane, text)[1] is None,
+                               EPICS.parent, t, targets)
+    except Exception as e:
+        print(f"watchdog: stall delivery failed: {e!r}", file=sys.stderr)
+
+
+ENDED_AFTER = 30 * 60
+ENDED_SCAN = 7 * 86400
+
+
+def mark_ended(b, t=None, status_dir=None):
+    """Closes the log of every session with no tab left whose last line is an open waiting/progress, so it never reads as overdue."""
+    t = t or time.time()
+    status_dir = Path(status_dir or adw_status.STATUS)
+    live = {a.get("session") for a in b.get("agents") or [] if a.get("session")}
+    stamp = datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    n = 0
+    for p in status_dir.glob("*.log"):
+        try:
+            if p.stem in live or t - p.stat().st_mtime > ENDED_SCAN:
+                continue
+            ev = adw_status.last_event(p.stem, status_dir)
+        except OSError:
+            continue
+        if not ev or ev["kind"] not in ("waiting", "progress") or t - ev["at"] < ENDED_AFTER:
+            continue
+        with open(p, "a") as f:
+            f.write(f"{stamp} ended: tab gone; last said {ev['kind']}: {ev['text'][:120]}\n")
+        n += 1
+    return n
+
+
+def watchdog(args):
+    MATE.mkdir(parents=True, exist_ok=True)
+    with open(EPICS.parent / "watchdog.lock", "w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("watchdog: another run holds the lock")
+            return
+        watchdog_locked(args)
+
+
+def watchdog_locked(args):
+    if not args.dry_run:
+        asks.apply_defaults()
+        asks.retry_deliveries()
+    full = build(args)
+    if full.get("agents") is None:
+        print("watchdog: no terminal backend available; skipping this run", file=sys.stderr)
+        return
+    if not args.dry_run:
+        mark_ended(full)
+    busy = busy_panes(full)
+    b = for_mate(full)
+    items = watchdog_items(b, write=not args.dry_run)
+    state_p = MATE / "watchdog-state.json"
+    try:
+        st = json.loads(state_p.read_text())
+    except (OSError, ValueError):
+        st = {}
+    if not isinstance(st, dict) or not isinstance(st.get("fired"), (dict, type(None))):
+        st = {}
+    t = time.time()
+    items, targets = stall_annotate(items, st, t)
+    header, lines, ns = watchdog_plan(items, st, t, datetime.fromtimestamp(t, timezone.utc))
+    if header:
+        text = "\n".join([header, *lines])
+        if args.dry_run:
+            print(text)
+        else:
+            mate_ok = False
+            pane = mate_pane(b)
+            info = asks.agent_info(pane) if pane else None
+            if not info:
+                print("watchdog: first-mate pane not found; will retry", file=sys.stderr)
+            elif info["status"] == "blocked":
+                print("watchdog: first mate is in a dialog; will retry", file=sys.stderr)
+            else:
+                _, err = asks.prompt(pane, text)
+                if err:
+                    print(f"watchdog: prompt failed: {err}; will retry", file=sys.stderr)
+                else:
+                    mate_ok = True
+                    state_p.write_text(json.dumps(ns))
+            stall_deliver(items, targets, mate_ok, t)
+    if not args.dry_run:
+        stall_redispatch(b, mate_pane(b), t, busy)
+        tmp = MATE / f".digest.md.{os.getpid()}"
+        tmp.write_text(digest(b))
+        tmp.replace(MATE / "digest.md")
+        if not header:
+            state_p.write_text(json.dumps(ns))
+    else:
+        print(f"watchdog: {len(items)} items open, {len(lines)} would be sent")
+    rotate_sessions(full, args.dry_run)
+
+
 def main():
     ap = argparse.ArgumentParser(prog="adw-board")
-    ap.add_argument("cmd", nargs="?", choices=("watch", "digest", "show", "needs"))
+    ap.add_argument("cmd", nargs="?", choices=("watch", "digest", "show", "needs", "watchdog"))
+    ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("target", nargs="?")
     ap.add_argument("--days", type=float, default=7)
     ap.add_argument("--all", action="store_true")
@@ -1279,6 +1622,9 @@ def main():
         return
     if args.cmd == "watch":
         watch(args)
+        return
+    if args.cmd == "watchdog":
+        watchdog(args)
         return
     b = build(args)
     if args.cmd in ("digest", "show", "needs"):

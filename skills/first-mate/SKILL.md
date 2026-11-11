@@ -16,7 +16,7 @@ crew. Watch lines and `adw-board show` tag tabs `[lead of X]`, `[crew of X; lead
   stalled-crew check-ins, reconcile requests). The lead owns its crew.
 - **Loose tabs** and **crew of an epic with no live lead**: handle directly, as below.
 - **Dialogs** are yours on the user's word in any tab.
-- **`trouble leaderless <epic>`** (lead gone, segments in flight): tell the user; don't restart it.
+- **`trouble leaderless <epic>`** (lead gone, segments in flight): if the lead's terminal is still live but stuck, `adw-respawn <lead terminal>` restarts it in place (same machine, cwd, name, session; refuses while it is working); if the lead exited (a finished terminal, which `adw-respawn` refuses), relaunch it: prompt `/adw-lead <epic>` in a new tab, or start it with `--settings $ADW_HOME/spawned-settings.json`. A refused or failed respawn goes to the user. `no lead registered` is the user's call.
 
 ## Relay — on the user's word, immediately, no re-confirmation
 Their instruction IS the authorization. Do it, then read the tab back to confirm it landed:

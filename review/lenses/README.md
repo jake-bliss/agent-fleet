@@ -12,6 +12,8 @@ What ships here:
 | `adversarial-review.md` | every round-1 review: the clean-context reviewer that never saw the brief |
 | `callsite-coverage.md` | every diff that extracts, wraps or moves behaviour |
 | `cross-tenant-isolation.md` | multi-tenant apps |
+| `concurrency-stale-state.md` | jobs, locks, ledgers and sync code: races, stale reads, retried work |
+| `flag-coverage.md` | a PR that ships new behaviour behind a feature flag: every path stays off while the flag is off |
 | `house-style.md` | every diff: location, naming, result types, tests and the comments rule, graded against the repo's own guide |
 | `migration-lock-safety.md` | schema migrations — a Rails/Postgres example to adapt |
 

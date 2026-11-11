@@ -92,6 +92,6 @@ if [ "$BEFORE_STATUS" != "$AFTER_STATUS" ]; then
   exit 1
 fi
 
-( cd "$WORKTREE" && review-receipt --write-report claude --sha "$HEAD_SHA" \
+( cd "$WORKTREE" && review-receipt --write-report claude --mode full --sha "$HEAD_SHA" \
     ${SINCE:+--since "$SINCE"} --tool claude-review "$OUTPUT" ) \
   || echo "WARNING: no machine-readable verdict in the review; review-receipt claude pass will not accept it" >&2

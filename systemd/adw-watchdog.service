@@ -1,0 +1,8 @@
+[Unit]
+Description=ADW watchdog (defaults, delivery retries, stall detection, one batched prompt to the first mate)
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 %h/.claude/adw/board/board.py watchdog
+TimeoutStartSec=300
