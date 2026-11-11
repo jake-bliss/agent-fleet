@@ -72,7 +72,6 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `bin/codex-review`, `claude-review`, `efficiency-report` | second-model review, headless Claude review (both write a verdict file for `review-receipt --report`), context-spend report |
 | `bin/adw-tick`, `adw-disk-check` | cheap lead wake check; host disk reading the board alerts on |
 | `bin/adw-respawn`, `dev-cleanup` | restart a terminal's claude session in place keeping its labels, cwd and session; prune merged worktrees across `ADW_CLEANUP_REPOS` |
-| `bin/aw-as`, `aw-lead-enroll`, `mate-msg` | optional AgentWire pieces: act as a lead's identity, register leads as agents, message the first mate; see `docs/aw-enrollers.md` |
 | `hooks/` | `tool-adoption`, `model-pin`, `cross-model-review`, `compact-resume`, `hc-session-state` Claude Code hooks, and herdr's state hook; see `docs/hooks.md` |
 | `tests/` | unit tests (`python3 -m unittest discover -s tests`); every test isolates `ADW_HOME` and the `hc` binary |
 | `review/` | the shared review contract and the lenses reviewers apply |
@@ -85,7 +84,6 @@ or, for a single scoped change, `/adw <repo-key> <brief.md>`. Open http://127.0.
 | `docs/ci-gate.md` | local CI parity and the pre-push gate |
 | `docs/multi-machine.md` | one hub board over several machines' herdr sockets (optional) |
 | `docs/worktrees.md` | copy-on-write worktrees |
-| `docs/aw-enrollers.md` | optional AgentWire setup for lead and first-mate messaging |
 | `docs/codex-overnight.md` | handing Codex unattended overnight builds: cutting, the goal prompt, the morning handoff |
 | `docs/CLAUDE.snippet.md` | conventions to paste into your own `CLAUDE.md` |
 

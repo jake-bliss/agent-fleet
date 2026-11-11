@@ -15,7 +15,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
@@ -33,21 +32,6 @@ LINE = re.compile(r"^(\S+) (\w+): (.*?)(?: until (\S+))?$")
 
 def pane_ref(pane):
     return load_asks().pane_ref(pane)
-
-
-def enroll_cmd():
-    return os.environ.get("AW_LEAD_ENROLL") or shutil.which("aw-lead-enroll")
-
-
-def enroll_lead(epic, ref):
-    cmd = enroll_cmd()
-    if not cmd:
-        return
-    try:
-        subprocess.run([cmd, epic, ref], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       stderr=None, timeout=40, check=False)
-    except Exception as e:
-        print(f"adw-status: aw enrollment skipped: {type(e).__name__}", file=sys.stderr)
 
 
 def iso(dt):
@@ -167,7 +151,6 @@ def main():
         tmp.write_text(json.dumps(rec, indent=2))
         tmp.replace(EPICS / epic / "lead.json")
         moved = rebind_asks(epic, prev.get("session"), session, pane_ref(pane)) if prev.get("session") != session else 0
-        enroll_lead(epic, pane_ref(pane))
         print(f"{pane} is now the lead of {epic}" + (f"; {moved} decision(s) re-routed here" if moved else ""))
         return
     text = " ".join(a.text.split())

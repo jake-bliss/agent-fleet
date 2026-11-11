@@ -22,7 +22,6 @@ crew. Watch lines and `adw-board show` tag tabs `[lead of X]`, `[crew of X; lead
 Their instruction IS the authorization. Do it, then read the tab back to confirm it landed:
 - Terminal ids: `t7` (this machine) or `<machine>/t7` are herdr app (`hc`) terminals; use `adw-mux` for them
   (`adw-mux send|read|get|keys|focus`) where this list says `herdr`. Pane ids like `w1:p2` are the herdr CLI's.
-- where AgentWire is set up, message a lead with `aw send inform "[first mate] the user says: <text>" --to lead-<epic>` (`docs/aw-enrollers.md`); `adw-mux send` is then for terminal control only;
 - message a tab: `herdr agent prompt <pane> "[first mate] the user says: <text>"` (`adw-mux send <terminal> "..."` for hc) (their words, or the
   note they asked you to draft — once they say send, send). About an epic, that tab is its lead;
 - a dialog: `herdr agent read` it first, then `herdr pane send-keys <pane> <keys>` for the option they

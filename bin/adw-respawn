@@ -12,8 +12,6 @@ import json
 import os
 import re
 import shlex
-import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -246,14 +244,6 @@ def adopt(mux, j, jid):
     return None
 
 
-def enroll_cmd():
-    override = os.environ.get("AW_LEAD_ENROLL")
-    if override:
-        return override
-    own = Path(__file__).resolve().parent / "aw-lead-enroll"
-    return str(own) if own.exists() else (shutil.which("aw-lead-enroll") or "aw-lead-enroll")
-
-
 def move_leads(old, new, session):
     n = 0
     for p in (STATE / "epics").glob("*/lead.json"):
@@ -267,11 +257,6 @@ def move_leads(old, new, session):
             tmp.write_text(json.dumps(rec, indent=2))
             tmp.replace(p)
             n += 1
-            try:
-                subprocess.run([enroll_cmd(), "--retarget-only", p.parent.name, new], stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, timeout=20, check=False)
-            except Exception:
-                pass
     return n
 
 

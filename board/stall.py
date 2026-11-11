@@ -8,9 +8,7 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import sqlite3
-import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -548,18 +546,6 @@ def redispatch_text(c, ep, t):
             f"Answer record: adw-ask show {c['ask']}")
 
 
-def retarget_aw(ep, pane):
-    try:
-        cmd = os.environ.get("AW_LEAD_ENROLL")
-        if not cmd:
-            own = Path(__file__).resolve().parent.parent / "bin/aw-lead-enroll"
-            cmd = str(own) if own.exists() else (shutil.which("aw-lead-enroll") or "aw-lead-enroll")
-        subprocess.run([cmd, "--retarget-only", ep, pane], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                       timeout=20, check=False)
-    except Exception:
-        pass
-
-
 def repoint_lead(root, ep, pane, session):
     p = root / "epics" / ep / "lead.json"
     lead = read_json(p)
@@ -569,7 +555,6 @@ def repoint_lead(root, ep, pane, session):
     tmp = p.with_name(f".lead.json.{os.getpid()}")
     tmp.write_text(json.dumps(lead, indent=2))
     tmp.replace(p)
-    retarget_aw(ep, pane)
     return True
 
 

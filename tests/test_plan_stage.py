@@ -131,7 +131,7 @@ class LeadRegistrationTest(unittest.TestCase):
         d.mkdir()
         (d / "graph.json").write_text("{}")
         (d / "PLANNING.json").write_text("{}")
-        with mock.patch.object(status, "EPICS", root), mock.patch.object(status, "session_for", return_value="s"), mock.patch.object(status, "enroll_lead"), \
+        with mock.patch.object(status, "EPICS", root), mock.patch.object(status, "session_for", return_value="s"), \
                 mock.patch.object(sys, "argv", ["adw-status", "lead", "ep", "--pane", "t1"]):
             with self.assertRaises(SystemExit) as cm:
                 status.main()

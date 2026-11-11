@@ -43,7 +43,6 @@ queue, an open ask): `adw-status waiting "<what; segment ids / PRs>" --for <unti
 Epic done or unrecoverable stop: `adw-status done|failed "<one line>"`.
 A wait text that names the human needs that decision's `d-xxxxxx` id (refused otherwise); `--mention` when they are only named.
 A tab that needs restarting: `adw-respawn <terminal>` (keeps its machine, cwd, name, labels and session; refuses while working; `--retry` resumes a failed one), never a hand-built `hc run`.
-Where AgentWire is set up, receive with `aw-as lead-<epic> inbox` and send with `aw-as lead-<epic> send inform "<text>" --to first-mate` (`docs/aw-enrollers.md`).
 
 ## Chain of command
 The user → **first mate** → **you, the epic lead** → crew (segment subagents + any other tab on this
